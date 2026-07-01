@@ -1,7 +1,7 @@
 [project]
 name = "skillz"
 version = "0.1.14"
-description = "MCP server that exposes Claude-style skills to any MCP client."
+description = "MCP server that exposes Agent Skills to any MCP client."
 readme = "README.md"
 authors = [
     { name = "Eleanor Berger", email = "eleanor@intellectronica.net" }
@@ -12,7 +12,7 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 license = { file = "LICENSE" }
-keywords = ["mcp", "skills", "fastmcp", "claude"]
+keywords = ["mcp", "agent-skills", "skills", "fastmcp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

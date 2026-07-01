@@ -1,22 +1,22 @@
 """Tests for zip-based skills support."""
 
-import base64
 from pathlib import Path
 import zipfile
 
 import pytest
+from fastmcp.exceptions import NotFoundError
 
 from skillz import SkillRegistry, build_server
 
 
 def create_zip_skill(
-    zip_path: Path, name: str = "TestSkill", with_resources: bool = True
+    zip_path: Path, name: str | None = None, with_resources: bool = True
 ) -> None:
-    """Create a test skill in a zip file."""
+    """Create a standard Agent Skill in a zip or .skill file."""
+    skill_name = name or zip_path.stem
     with zipfile.ZipFile(zip_path, "w") as z:
-        # Create SKILL.md
         skill_md_content = f"""---
-name: {name}
+name: {skill_name}
 description: Test skill from zip
 ---
 Test skill instructions from zip file.
@@ -24,27 +24,22 @@ Test skill instructions from zip file.
         z.writestr("SKILL.md", skill_md_content)
 
         if with_resources:
-            # Create text file
             z.writestr("text/hello.txt", "Hello from zip!")
-
-            # Create binary file
             z.writestr("bin/data.bin", b"\xff\xfe\x00\x01\x80\x90")
-
-            # Create Python script
             z.writestr("scripts/run.py", "print('hello')")
 
 
 def test_zip_skill_loads_and_parses_skill_md(tmp_path: Path) -> None:
     """Test that a zip with SKILL.md at root is loaded correctly."""
     zip_path = tmp_path / "my-skill.zip"
-    create_zip_skill(zip_path, name="MySkill")
+    create_zip_skill(zip_path)
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
     assert len(registry.skills) == 1
-    skill = registry.get("myskill")
-    assert skill.metadata.name == "MySkill"
+    skill = registry.get("my-skill")
+    assert skill.metadata.name == "my-skill"
     assert skill.metadata.description == "Test skill from zip"
     assert skill.is_zip
     assert skill.zip_path == zip_path.resolve()
@@ -53,36 +48,31 @@ def test_zip_skill_loads_and_parses_skill_md(tmp_path: Path) -> None:
 def test_zip_skill_resources_are_discovered(tmp_path: Path) -> None:
     """Test that resources in zip are discovered with correct URIs."""
     zip_path = tmp_path / "my-skill.zip"
-    create_zip_skill(zip_path, name="MySkill")
+    create_zip_skill(zip_path)
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
-    skill = registry.get("myskill")
+    skill = registry.get("my-skill")
 
     from fastmcp import FastMCP
-
-    mcp = FastMCP()
     from skillz._server import register_skill_resources
 
+    mcp = FastMCP()
     metadata = register_skill_resources(mcp, skill)
 
-    # Should have 3 resources
     assert len(metadata) == 3
 
-    # Check URIs
     uris = {m["uri"] for m in metadata}
-    assert "resource://skillz/myskill/text/hello.txt" in uris
-    assert "resource://skillz/myskill/bin/data.bin" in uris
-    assert "resource://skillz/myskill/scripts/run.py" in uris
+    assert "resource://skillz/my-skill/text/hello.txt" in uris
+    assert "resource://skillz/my-skill/bin/data.bin" in uris
+    assert "resource://skillz/my-skill/scripts/run.py" in uris
 
-    # Check names
     names = {m["name"] for m in metadata}
-    assert "myskill/text/hello.txt" in names
-    assert "myskill/bin/data.bin" in names
-    assert "myskill/scripts/run.py" in names
+    assert "my-skill/text/hello.txt" in names
+    assert "my-skill/bin/data.bin" in names
+    assert "my-skill/scripts/run.py" in names
 
-    # SKILL.md should NOT be in resources
     for m in metadata:
         assert "SKILL.md" not in m["name"]
 
@@ -91,50 +81,38 @@ def test_zip_skill_resources_are_discovered(tmp_path: Path) -> None:
 async def test_zip_skill_text_resource_read(tmp_path: Path) -> None:
     """Test reading text resource from zip-based skill."""
     zip_path = tmp_path / "test-skill.zip"
-    create_zip_skill(zip_path, name="TestSkill")
+    create_zip_skill(zip_path)
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
     server = build_server(registry)
-    tools = await server.get_tools()
-    fetch_tool = tools["fetch_resource"]
-
-    result = await fetch_tool.fn(
-        resource_uri="resource://skillz/testskill/text/hello.txt"
+    result = await server._mcp_read_resource(
+        "resource://skillz/test-skill/text/hello.txt"
     )
 
-    assert result["uri"] == "resource://skillz/testskill/text/hello.txt"
-    assert result["name"] == "testskill/text/hello.txt"
-    assert result["mime_type"] == "text/plain"
-    assert result["encoding"] == "utf-8"
-    assert result["content"] == "Hello from zip!"
+    assert len(result) == 1
+    assert result[0].mime_type == "text/plain"
+    assert result[0].content == "Hello from zip!"
 
 
 @pytest.mark.asyncio
 async def test_zip_skill_binary_resource_read(tmp_path: Path) -> None:
     """Test reading binary resource from zip-based skill."""
     zip_path = tmp_path / "test-skill.zip"
-    create_zip_skill(zip_path, name="TestSkill")
+    create_zip_skill(zip_path)
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
     server = build_server(registry)
-    tools = await server.get_tools()
-    fetch_tool = tools["fetch_resource"]
-
-    result = await fetch_tool.fn(
-        resource_uri="resource://skillz/testskill/bin/data.bin"
+    result = await server._mcp_read_resource(
+        "resource://skillz/test-skill/bin/data.bin"
     )
 
-    assert result["uri"] == "resource://skillz/testskill/bin/data.bin"
-    assert result["name"] == "testskill/bin/data.bin"
-    assert result["encoding"] == "base64"
-
-    # Verify content can be decoded
-    decoded = base64.b64decode(result["content"])
-    assert decoded == b"\xff\xfe\x00\x01\x80\x90"
+    assert len(result) == 1
+    assert result[0].mime_type in [None, "application/octet-stream"]
+    assert result[0].content == b"\xff\xfe\x00\x01\x80\x90"
 
 
 def test_zip_missing_skill_md_is_ignored(tmp_path: Path) -> None:
@@ -147,7 +125,6 @@ def test_zip_missing_skill_md_is_ignored(tmp_path: Path) -> None:
     registry = SkillRegistry(tmp_path)
     registry.load()
 
-    # Should not be loaded
     assert len(registry.skills) == 0
 
 
@@ -159,18 +136,16 @@ def test_corrupt_zip_is_ignored(tmp_path: Path) -> None:
     registry = SkillRegistry(tmp_path)
     registry.load()
 
-    # Should not crash, just ignore the invalid zip
     assert len(registry.skills) == 0
 
 
 def test_zip_inside_dir_skill_is_ignored(tmp_path: Path) -> None:
     """Test that zip files inside directory skills are ignored."""
-    # Create directory skill
-    skill_dir = tmp_path / "myskill"
+    skill_dir = tmp_path / "directory-skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
         """---
-name: DirectorySkill
+name: directory-skill
 description: A directory-based skill
 ---
 Directory skill content.
@@ -178,41 +153,36 @@ Directory skill content.
         encoding="utf-8",
     )
 
-    # Place a zip file inside the skill directory
     zip_path = skill_dir / "nested.zip"
-    create_zip_skill(zip_path, name="NestedSkill")
+    create_zip_skill(zip_path, name="nested")
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
-    # Only the directory skill should be loaded
     assert len(registry.skills) == 1
-    skill = registry.get("directoryskill")
-    assert skill.metadata.name == "DirectorySkill"
+    skill = registry.get("directory-skill")
+    assert skill.metadata.name == "directory-skill"
     assert not skill.is_zip
 
 
 def test_zips_in_non_skill_subdirectories_are_loaded(tmp_path: Path) -> None:
     """Test that zips in subdirectories without SKILL.md are loaded."""
-    # Create subdirectory structure
     packs_a = tmp_path / "packs" / "a"
     packs_a.mkdir(parents=True)
     packs_b = tmp_path / "packs" / "b"
     packs_b.mkdir(parents=True)
 
-    # Create zip skills in subdirectories
-    create_zip_skill(packs_a / "skill-a.zip", name="SkillA")
-    create_zip_skill(packs_b / "skill-b.zip", name="SkillB")
+    create_zip_skill(packs_a / "skill-a.zip")
+    create_zip_skill(packs_b / "skill-b.zip")
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
-    # Both should be loaded
     assert len(registry.skills) == 2
-    skill_a = registry.get("skilla")
-    skill_b = registry.get("skillb")
-    assert skill_a.metadata.name == "SkillA"
-    assert skill_b.metadata.name == "SkillB"
+    skill_a = registry.get("skill-a")
+    skill_b = registry.get("skill-b")
+    assert skill_a.metadata.name == "skill-a"
+    assert skill_b.metadata.name == "skill-b"
     assert skill_a.is_zip
     assert skill_b.is_zip
 
@@ -221,31 +191,26 @@ def test_nested_zip_not_treated_as_skill(tmp_path: Path) -> None:
     """Test that zip files inside zip-based skills are just resources."""
     zip_path = tmp_path / "outer.zip"
     with zipfile.ZipFile(zip_path, "w") as z:
-        # Create SKILL.md at root
         z.writestr(
             "SKILL.md",
             """---
-name: OuterSkill
+name: outer
 description: Outer skill
 ---
 Outer skill content.
 """,
         )
-
-        # Add a nested zip as a resource
         inner_zip_data = b"PK\x03\x04\x00\x00\x00\x00\x00\x00\x00\x00"
         z.writestr("resources/inner.zip", inner_zip_data)
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
-    # Only outer skill should be loaded
     assert len(registry.skills) == 1
-    skill = registry.get("outerskill")
-    assert skill.metadata.name == "OuterSkill"
+    skill = registry.get("outer")
+    assert skill.metadata.name == "outer"
     assert skill.is_zip
 
-    # The inner.zip should be a resource, not a separate skill
     from fastmcp import FastMCP
     from skillz._server import register_skill_resources
 
@@ -253,17 +218,16 @@ Outer skill content.
     metadata = register_skill_resources(mcp, skill)
 
     resource_names = {m["name"] for m in metadata}
-    assert "outerskill/resources/inner.zip" in resource_names
+    assert "outer/resources/inner.zip" in resource_names
 
 
 def test_skill_name_collision_skips_zip(tmp_path: Path) -> None:
     """Test that zip with duplicate name is skipped."""
-    # Create directory skill first
     skill_dir = tmp_path / "foo"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
         """---
-name: Foo
+name: foo
 description: Directory skill
 ---
 Content.
@@ -271,29 +235,27 @@ Content.
         encoding="utf-8",
     )
 
-    # Create zip skill with same name
     zip_path = tmp_path / "foo.zip"
-    create_zip_skill(zip_path, name="Foo")
+    create_zip_skill(zip_path)
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
-    # Only directory skill should be loaded
     assert len(registry.skills) == 1
     skill = registry.get("foo")
     assert not skill.is_zip
-    assert skill.metadata.name == "Foo"
+    assert skill.metadata.name == "foo"
 
 
 @pytest.mark.asyncio
 async def test_zip_skill_instructions_read_correctly(tmp_path: Path) -> None:
     """Test that skill instructions are read correctly from zip."""
-    zip_path = tmp_path / "test.zip"
+    zip_path = tmp_path / "test-instructions.zip"
     with zipfile.ZipFile(zip_path, "w") as z:
         z.writestr(
             "SKILL.md",
             """---
-name: TestInstructions
+name: test-instructions
 description: Test reading instructions
 ---
 These are the skill instructions.
@@ -307,7 +269,7 @@ With multiple lines.
 
     server = build_server(registry)
     tools = await server.get_tools()
-    skill_tool = tools["testinstructions"]
+    skill_tool = tools["test-instructions"]
 
     result = await skill_tool.fn(task="test task")
 
@@ -323,20 +285,20 @@ def test_zip_skill_with_macos_metadata_filtered(tmp_path: Path) -> None:
         z.writestr(
             "SKILL.md",
             """---
-name: MacSkill
+name: mac-skill
 description: Skill with macOS metadata
 ---
 Content.
 """,
         )
         z.writestr("script.py", "print('hello')")
-        z.writestr("__MACOSX/._script.py", b"\x00\x01\x02")  # macOS metadata
-        z.writestr(".DS_Store", b"DS_Store content")  # macOS metadata
+        z.writestr("__MACOSX/._script.py", b"\x00\x01\x02")
+        z.writestr(".DS_Store", b"DS_Store content")
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
-    skill = registry.get("macskill")
+    skill = registry.get("mac-skill")
 
     from fastmcp import FastMCP
     from skillz._server import register_skill_resources
@@ -344,42 +306,34 @@ Content.
     mcp = FastMCP()
     metadata = register_skill_resources(mcp, skill)
 
-    # Should only have script.py, not macOS metadata files
     assert len(metadata) == 1
-    assert metadata[0]["name"] == "macskill/script.py"
+    assert metadata[0]["name"] == "mac-skill/script.py"
 
 
 @pytest.mark.asyncio
 async def test_zip_path_traversal_rejected(tmp_path: Path) -> None:
     """Test that path traversal attempts are rejected."""
-    zip_path = tmp_path / "test.zip"
-    create_zip_skill(zip_path, name="TestSkill")
+    zip_path = tmp_path / "test-skill.zip"
+    create_zip_skill(zip_path)
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
     server = build_server(registry)
-    tools = await server.get_tools()
-    fetch_tool = tools["fetch_resource"]
 
-    # Try path traversal
-    result = await fetch_tool.fn(
-        resource_uri="resource://skillz/testskill/../../../etc/passwd"
-    )
-
-    # Should return error
-    assert "Error" in result["content"]
-    assert "path traversal" in result["content"]
+    with pytest.raises(NotFoundError):
+        await server._mcp_read_resource(
+            "resource://skillz/test-skill/../../../etc/passwd"
+        )
 
 
 def test_mixed_directory_and_zip_skills(tmp_path: Path) -> None:
     """Test that both directory and zip skills can coexist."""
-    # Create directory skill
     dir_skill = tmp_path / "dir-skill"
     dir_skill.mkdir()
     (dir_skill / "SKILL.md").write_text(
         """---
-name: DirSkill
+name: dir-skill
 description: Directory skill
 ---
 Dir content.
@@ -387,34 +341,31 @@ Dir content.
         encoding="utf-8",
     )
 
-    # Create zip skill
     zip_path = tmp_path / "zip-skill.zip"
-    create_zip_skill(zip_path, name="ZipSkill")
+    create_zip_skill(zip_path)
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
-    # Both should be loaded
     assert len(registry.skills) == 2
 
-    dir_skill_obj = registry.get("dirskill")
-    zip_skill_obj = registry.get("zipskill")
+    dir_skill_obj = registry.get("dir-skill")
+    zip_skill_obj = registry.get("zip-skill")
 
     assert not dir_skill_obj.is_zip
     assert zip_skill_obj.is_zip
-    assert dir_skill_obj.metadata.name == "DirSkill"
-    assert zip_skill_obj.metadata.name == "ZipSkill"
+    assert dir_skill_obj.metadata.name == "dir-skill"
+    assert zip_skill_obj.metadata.name == "zip-skill"
 
 
 def test_zip_with_top_level_directory(tmp_path: Path) -> None:
     """Test zip with single top-level directory containing SKILL.md."""
-    # Create a zip with structure: my-skill.zip/my-skill/SKILL.md
     zip_path = tmp_path / "my-skill.zip"
     with zipfile.ZipFile(zip_path, "w") as z:
         z.writestr(
             "my-skill/SKILL.md",
             """---
-name: MySkill
+name: my-skill
 description: Test skill in top-level dir
 ---
 Instructions.
@@ -426,10 +377,9 @@ Instructions.
     registry = SkillRegistry(tmp_path)
     registry.load()
 
-    # Should be loaded
     assert len(registry.skills) == 1
-    skill = registry.get("myskill")
-    assert skill.metadata.name == "MySkill"
+    skill = registry.get("my-skill")
+    assert skill.metadata.name == "my-skill"
     assert skill.is_zip
     assert skill.zip_root_prefix == "my-skill/"
 
@@ -444,7 +394,7 @@ async def test_zip_with_top_level_directory_resources(
         z.writestr(
             "test-skill/SKILL.md",
             """---
-name: TestSkill
+name: test-skill
 description: Test
 ---
 Content.
@@ -456,28 +406,25 @@ Content.
     registry.load()
 
     server = build_server(registry)
-    tools = await server.get_tools()
-    fetch_tool = tools["fetch_resource"]
-
-    result = await fetch_tool.fn(
-        resource_uri="resource://skillz/testskill/data.txt"
+    result = await server._mcp_read_resource(
+        "resource://skillz/test-skill/data.txt"
     )
 
-    assert result["encoding"] == "utf-8"
-    assert result["content"] == "Test data from nested structure"
+    assert len(result) == 1
+    assert result[0].content == "Test data from nested structure"
 
 
 def test_skill_extension_loads_like_zip(tmp_path: Path) -> None:
     """Test that files with .skill extension are loaded as zip files."""
-    skill_path = tmp_path / "my-skill.skill"
-    create_zip_skill(skill_path, name="SkillExtension")
+    skill_path = tmp_path / "skill-extension.skill"
+    create_zip_skill(skill_path)
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
     assert len(registry.skills) == 1
-    skill = registry.get("skillextension")
-    assert skill.metadata.name == "SkillExtension"
+    skill = registry.get("skill-extension")
+    assert skill.metadata.name == "skill-extension"
     assert skill.is_zip
     assert skill.zip_path == skill_path.resolve()
 
@@ -485,46 +432,39 @@ def test_skill_extension_loads_like_zip(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_skill_extension_resources_readable(tmp_path: Path) -> None:
     """Test that resources in .skill files can be read correctly."""
-    skill_path = tmp_path / "test.skill"
-    create_zip_skill(skill_path, name="TestSkillExt")
+    skill_path = tmp_path / "test-skill-ext.skill"
+    create_zip_skill(skill_path)
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
     server = build_server(registry)
-    tools = await server.get_tools()
-    fetch_tool = tools["fetch_resource"]
-
-    result = await fetch_tool.fn(
-        resource_uri="resource://skillz/testskillext/text/hello.txt"
+    result = await server._mcp_read_resource(
+        "resource://skillz/test-skill-ext/text/hello.txt"
     )
 
-    assert result["uri"] == "resource://skillz/testskillext/text/hello.txt"
-    assert result["content"] == "Hello from zip!"
-    assert result["encoding"] == "utf-8"
+    assert len(result) == 1
+    assert result[0].content == "Hello from zip!"
 
 
 def test_mixed_zip_and_skill_extensions(tmp_path: Path) -> None:
     """Test that both .zip and .skill files can coexist."""
-    # Create a .zip file
     zip_path = tmp_path / "skill-one.zip"
-    create_zip_skill(zip_path, name="SkillOne")
+    create_zip_skill(zip_path)
 
-    # Create a .skill file
     skill_path = tmp_path / "skill-two.skill"
-    create_zip_skill(skill_path, name="SkillTwo")
+    create_zip_skill(skill_path)
 
     registry = SkillRegistry(tmp_path)
     registry.load()
 
-    # Both should be loaded
     assert len(registry.skills) == 2
 
-    skill_one = registry.get("skillone")
-    skill_two = registry.get("skilltwo")
+    skill_one = registry.get("skill-one")
+    skill_two = registry.get("skill-two")
 
-    assert skill_one.metadata.name == "SkillOne"
-    assert skill_two.metadata.name == "SkillTwo"
+    assert skill_one.metadata.name == "skill-one"
+    assert skill_two.metadata.name == "skill-two"
     assert skill_one.is_zip
     assert skill_two.is_zip
     assert skill_one.zip_path == zip_path.resolve()

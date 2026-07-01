@@ -7,7 +7,7 @@
 
 > ⚠️ **Experimental proof‑of‑concept. Potentially unsafe. Treat skills like untrusted code and run in sandboxes/containers. Use at your own risk.**
 
-**Skillz** is an MCP server that turns [Claude-style skills](https://github.com/anthropics/skills) _(`SKILL.md` plus optional resources)_ into callable tools for any MCP client. It discovers each skill, exposes the authored instructions and resources, and can run bundled helper scripts.
+**Skillz** is an MCP server that turns [Agent Skills](https://agentskills.io/home) _(`SKILL.md` plus optional `scripts/`, `references/`, and `assets/`)_ into callable tools for any MCP client. It discovers each skill, exposes the authored instructions and resources, and leaves script execution to the MCP client.
 
 > 💡 You can find skills to install at the **[Skills Supermarket](http://skills.intellectronica.net/)** directory.
 
@@ -149,6 +149,57 @@ You can use `skillz --list-skills` (optionally pointing at another skills root)
 to verify which skills the server will expose before connecting it to your
 agent.
 
+### Browser clients such as llama-ui
+
+Browser-hosted MCP clients cannot start Skillz through stdio. Run Skillz as an
+HTTP MCP server and point the client at that URL instead:
+
+```powershell
+uv run --directory C:\Dev\github-repos\skillz --frozen skillz C:\Softwares\codex\skills --transport http --host 127.0.0.1 --port 8000 --path /mcp --cors-origin http://127.0.0.1:8282
+```
+
+Then open llama-ui's MCP Servers page and add:
+
+```text
+http://127.0.0.1:8000/mcp
+```
+
+The value passed to `--cors-origin` must match the browser page origin exactly,
+including scheme, host, and port. Repeat `--cors-origin` to allow more than one
+local UI origin. Keep Skillz bound to `127.0.0.1` unless you intentionally want
+other machines to reach it.
+
+If you do not enable CORS in Skillz, start `llama-server` with
+`--ui-mcp-proxy` and enable `Use llama-server proxy` in the server card after
+adding the URL. That proxy is only for HTTP/HTTPS MCP servers.
+
+For Windows users, `SetupAndRun/SetupAndRun.ps1` reads
+`SetupAndRun/SetupAndRun.json`, validates it against
+`SetupAndRun/SetupAndRunSchema.json` when `Test-Json` is available, applies
+the same required field and type checks on Windows PowerShell 5.1, configures
+the local uv environment, and starts Skillz:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1
+```
+
+See `SetupAndRun/SetupAndRun.md` for direct browser connections,
+llama-server proxy connections, two-computer setups, and script tests.
+
+### MCP tools
+
+Skillz exposes one read-only discovery tool plus one tool per discovered skill:
+
+| Tool | Purpose |
+| --- | --- |
+| `list_skills` | List the currently available skills using only startup metadata: slug, name, and description. |
+| `<skill-slug>` | Invoke a specific skill and return its full instructions, metadata, and MCP resource URIs. |
+
+Skillz does not expose MCP tools that add, remove, or fetch skill files. Manage
+the skills directory with normal filesystem or package-management workflows.
+When a skill response lists resource URIs, use the client's native MCP resource
+reading support to fetch those files.
+
 ## CLI Reference
 
 `skillz [skills_root] [options]`
@@ -160,9 +211,12 @@ agent.
 | `--host HOST` | Bind address for HTTP/SSE transports. |
 | `--port PORT` | Port for HTTP/SSE transports. |
 | `--path PATH` | URL path when using the HTTP transport. |
+| `--cors-origin ORIGIN` | Allow a browser origin for HTTP/SSE transports. Repeat for multiple origins. |
+| `--cors-allow-credentials` | Allow credentialed CORS requests. Cannot be used with `--cors-origin '*'`. |
 | `--list-skills` | List discovered skills and exit. |
 | `--verbose` | Emit debug logging to the console. |
-| `--log` | Mirror verbose logs to `/tmp/skillz.log`. |
+| `--log` | Mirror verbose logs to `.skillz/skillz.log` unless `--log-file` is set. |
+| `--log-file PATH` | Log file path used with `--log`. |
 
 ---
 
