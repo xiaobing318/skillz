@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/intellectronica/skillz/SetupAndRun/SetupAndRunSchema.json",
+  "title": "Skillz SetupAndRun configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "skillsRoot",
+    "transport",
+    "host",
+    "port",
+    "path"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "skillsRoot": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Directory containing Agent Skill folders or .zip/.skill packages."
+    },
+    "transport": {
+      "type": "string",
+      "enum": [
+        "stdio",
+        "http",
+        "sse"
+      ]
+    },
+    "host": {
+      "type": "string",
+      "minLength": 1
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "path": {
+      "type": "string",
+      "pattern": "^/",
+      "description": "HTTP MCP endpoint path. Used only when transport is http."
+    },
+    "corsOrigins": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "default": []
+    },
+    "corsAllowCredentials": {
+      "type": "boolean",
+      "default": false
+    },
+    "python": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "uvSync": {
+          "type": "boolean",
+          "default": true
+        },
+        "frozen": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verbose": {
+          "type": "boolean",
+          "default": false
+        },
+        "log": {
+          "type": "boolean",
+          "default": false
+        },
+        "logPath": {
+          "type": "string",
+          "minLength": 1,
+          "default": ".skillz/skillz.log",
+          "description": "Log file path used when logging.log is true."
+        }
+      }
+    }
+  }
+}
