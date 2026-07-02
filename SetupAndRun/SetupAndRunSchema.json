@@ -55,10 +55,20 @@
       "type": "boolean",
       "default": false
     },
+    "corsAllowPrivateNetwork": {
+      "type": "boolean",
+      "default": false,
+      "description": "Respond to trusted browser Private Network Access preflights. Use only with explicit corsOrigins."
+    },
     "python": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "interpreter": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Python executable path, or a directory containing python.exe/python.cmd/python.bat. Relative paths are resolved from the config file directory."
+        },
         "uvSync": {
           "type": "boolean",
           "default": true

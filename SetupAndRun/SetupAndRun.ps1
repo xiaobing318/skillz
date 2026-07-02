@@ -27,6 +27,11 @@ Options:
   -NoLaunch           Build and print the Skillz command without starting it.
   -PrintCommand       Print the resolved Skillz command before running it.
   -Help               Show this help text.
+
+Configuration:
+  python.interpreter may point to a Python executable, or to a directory
+  containing python.exe, python.cmd, or python.bat. Relative paths are
+  resolved from the JSON config file directory.
 "@
 }
 
@@ -232,6 +237,80 @@ function Get-ConfigStringArray {
     return $items
 }
 
+function Resolve-ConfigPathValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$BaseDirectory
+    )
+
+    if ([System.IO.Path]::IsPathRooted($Value)) {
+        return [System.IO.Path]::GetFullPath($Value)
+    }
+
+    return [System.IO.Path]::GetFullPath(
+        (Join-Path $BaseDirectory $Value)
+    )
+}
+
+function Resolve-PythonInterpreter {
+    param(
+        [Parameter(Mandatory = $true)][string]$Interpreter,
+        [Parameter(Mandatory = $true)][string]$BaseDirectory
+    )
+
+    $candidate = Resolve-ConfigPathValue `
+        -Value $Interpreter `
+        -BaseDirectory $BaseDirectory
+
+    if (-not (Test-Path -LiteralPath $candidate)) {
+        throw "Config field 'python.interpreter' path not found: $candidate"
+    }
+
+    $item = Get-Item -LiteralPath $candidate
+    if (-not $item.PSIsContainer) {
+        return (Resolve-Path -LiteralPath $candidate).Path
+    }
+
+    foreach ($fileName in @("python.exe", "python.cmd", "python.bat")) {
+        $pythonPath = Join-Path $candidate $fileName
+        if (Test-Path -LiteralPath $pythonPath -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $pythonPath).Path
+        }
+    }
+
+    throw (
+        "Config field 'python.interpreter' directory does not contain " +
+        "python.exe, python.cmd, or python.bat: $candidate"
+    )
+}
+
+function Test-PythonUv {
+    param([Parameter(Mandatory = $true)][string]$PythonPath)
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $uvOutput = & $PythonPath -m uv --version 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($exitCode -ne 0) {
+        $installCommand = (
+            (Format-CommandArgument $PythonPath) +
+            " -m pip install uv"
+        )
+        throw (
+            "uv is not available for python.interpreter '$PythonPath'. " +
+            "Install uv first: $installCommand"
+        )
+    }
+
+    $null = $uvOutput
+}
+
 function Read-JsonConfig {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -270,6 +349,7 @@ function Test-SkillzConfig {
         'path',
         'corsOrigins',
         'corsAllowCredentials',
+        'corsAllowPrivateNetwork',
         'python',
         'logging'
     ) "config"
@@ -292,15 +372,23 @@ function Test-SkillzConfig {
         throw "Config field 'path' must start with '/' for HTTP transport."
     }
 
-    $corsOrigins = Get-ConfigStringArray $Config "corsOrigins" "corsOrigins"
+    $corsOrigins = @(Get-ConfigStringArray $Config "corsOrigins" "corsOrigins")
     $allowCredentials = Get-ConfigBoolean $Config "corsAllowCredentials" $false "corsAllowCredentials"
     if ($allowCredentials -and ($corsOrigins -contains "*")) {
         throw "corsAllowCredentials cannot be true when corsOrigins contains '*'."
     }
+    $allowPrivateNetwork = Get-ConfigBoolean $Config "corsAllowPrivateNetwork" $false "corsAllowPrivateNetwork"
+    if ($allowPrivateNetwork -and ($corsOrigins.Count -eq 0)) {
+        throw "corsAllowPrivateNetwork requires at least one corsOrigins entry."
+    }
+    if ($allowPrivateNetwork -and ($corsOrigins -contains "*")) {
+        throw "corsAllowPrivateNetwork cannot be true when corsOrigins contains '*'."
+    }
 
     $pythonConfig = Get-ConfigObject $Config "python" "python"
     if ($null -ne $pythonConfig) {
-        Assert-KnownProperties $pythonConfig @("uvSync", "frozen") "config.python"
+        Assert-KnownProperties $pythonConfig @("interpreter", "uvSync", "frozen") "config.python"
+        $null = Get-ConfigString $pythonConfig "interpreter" $false "python.interpreter"
         $null = Get-ConfigBoolean $pythonConfig "uvSync" $true "python.uvSync"
         $null = Get-ConfigBoolean $pythonConfig "frozen" $true "python.frozen"
     }
@@ -337,22 +425,43 @@ if (-not (Test-Path -LiteralPath $ConfigPath)) {
 }
 
 $ConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
+$configDirectory = Split-Path -Parent $ConfigPath
 $schemaPath = Join-Path $scriptDir "SetupAndRunSchema.json"
 $config = Read-JsonConfig -Path $ConfigPath -SchemaPath $schemaPath
 Test-SkillzConfig $config
-
-$uv = Get-Command uv -ErrorAction SilentlyContinue
-if ($null -eq $uv) {
-    throw "uv was not found on PATH. Install uv first: https://docs.astral.sh/uv/"
-}
 
 $pythonConfig = Get-ConfigObject $config "python" "python"
 $loggingConfig = Get-ConfigObject $config "logging" "logging"
 $frozen = Get-ConfigBoolean $pythonConfig "frozen" $true "python.frozen"
 $uvSync = Get-ConfigBoolean $pythonConfig "uvSync" $true "python.uvSync"
+$pythonInterpreterConfig = Get-ConfigString $pythonConfig "interpreter" $false "python.interpreter"
+$pythonInterpreter = $null
+$uvCommand = $null
+$uvPrefixArgs = @()
+
+if ($null -ne $pythonInterpreterConfig) {
+    $pythonInterpreter = Resolve-PythonInterpreter `
+        -Interpreter $pythonInterpreterConfig `
+        -BaseDirectory $configDirectory
+    Test-PythonUv $pythonInterpreter
+    $uvCommand = $pythonInterpreter
+    $uvPrefixArgs = @("-m", "uv")
+}
+else {
+    $uv = Get-Command uv -ErrorAction SilentlyContinue
+    if ($null -eq $uv) {
+        throw "uv was not found on PATH. Install uv first: https://docs.astral.sh/uv/"
+    }
+    $uvCommand = $uv.Source
+}
 
 if ($uvSync -and -not $SkipSync) {
-    $syncArgs = @("sync")
+    $syncArgs = @($uvPrefixArgs)
+    $syncArgs += "sync"
+    if ($null -ne $pythonInterpreter) {
+        $syncArgs += "--python"
+        $syncArgs += $pythonInterpreter
+    }
     if ($frozen) {
         $syncArgs += "--frozen"
     }
@@ -360,7 +469,7 @@ if ($uvSync -and -not $SkipSync) {
     Write-Host "Configuring Python environment in $repoRoot"
     Push-Location $repoRoot
     try {
-        & $uv.Source @syncArgs
+        & $uvCommand @syncArgs
     }
     finally {
         Pop-Location
@@ -376,7 +485,14 @@ if ($ConfigureOnly) {
 }
 
 $transport = [string]$config.transport
-$runArgs = @("run", "--directory", $repoRoot)
+$runArgs = @($uvPrefixArgs)
+$runArgs += "run"
+$runArgs += "--directory"
+$runArgs += $repoRoot
+if ($null -ne $pythonInterpreter) {
+    $runArgs += "--python"
+    $runArgs += $pythonInterpreter
+}
 if ($frozen) {
     $runArgs += "--frozen"
 }
@@ -405,6 +521,9 @@ if ($transport -in @("http", "sse")) {
     if (Get-ConfigBoolean $config "corsAllowCredentials" $false "corsAllowCredentials") {
         $runArgs += "--cors-allow-credentials"
     }
+    if (Get-ConfigBoolean $config "corsAllowPrivateNetwork" $false "corsAllowPrivateNetwork") {
+        $runArgs += "--cors-allow-private-network"
+    }
 }
 
 if (Get-ConfigBoolean $loggingConfig "verbose" $false "logging.verbose") {
@@ -420,7 +539,7 @@ if (Get-ConfigBoolean $loggingConfig "log" $false "logging.log") {
     $runArgs += [string]$logPath
 }
 
-$commandLine = Format-CommandLine $uv.Source $runArgs
+$commandLine = Format-CommandLine $uvCommand $runArgs
 if ($transport -eq "http") {
     $endpoint = "http://$($config.host):$($config.port)$($config.path)"
 }
@@ -441,4 +560,4 @@ if ($NoLaunch) {
     exit 0
 }
 
-& $uv.Source @runArgs
+& $uvCommand @runArgs

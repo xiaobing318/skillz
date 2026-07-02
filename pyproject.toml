@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "fastmcp>=2.2.5",
     "pyyaml>=6.0",
+    "starlette>=1.3.1",
 ]
 license = { file = "LICENSE" }
 keywords = ["mcp", "agent-skills", "skills", "fastmcp"]

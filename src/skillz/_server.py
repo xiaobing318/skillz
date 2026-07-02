@@ -1002,18 +1002,29 @@ def build_cors_middleware(
     allowed_origins: Iterable[str],
     *,
     allow_credentials: bool = False,
+    allow_private_network: bool = False,
 ) -> list[Middleware]:
     """Build optional CORS middleware for browser-hosted MCP clients."""
 
     origins = tuple(
         origin.strip() for origin in allowed_origins if origin.strip()
     )
+    if allow_private_network and not origins:
+        raise SkillError(
+            "--cors-allow-private-network requires at least one "
+            "--cors-origin."
+        )
     if not origins:
         return []
 
     if allow_credentials and "*" in origins:
         raise SkillError(
             "--cors-allow-credentials cannot be used with "
+            "--cors-origin '*'."
+        )
+    if allow_private_network and "*" in origins:
+        raise SkillError(
+            "--cors-allow-private-network cannot be used with "
             "--cors-origin '*'."
         )
 
@@ -1025,6 +1036,7 @@ def build_cors_middleware(
             allow_methods=CORS_ALLOW_METHODS,
             allow_headers=["*"],
             expose_headers=[MCP_SESSION_ID_HEADER],
+            allow_private_network=allow_private_network,
         )
     ]
 
@@ -1195,6 +1207,14 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--cors-allow-private-network",
+        action="store_true",
+        help=(
+            "Allow trusted browser origins to pass Chrome private network "
+            "preflights. Cannot be used with --cors-origin '*'."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable debug logging",
@@ -1228,6 +1248,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         parser.error(
             "--cors-allow-credentials cannot be used with --cors-origin '*'."
         )
+    if args.cors_allow_private_network and "*" in args.cors_origin:
+        parser.error(
+            "--cors-allow-private-network cannot be used with "
+            "--cors-origin '*'."
+        )
+    if args.cors_allow_private_network and not args.cors_origin:
+        parser.error(
+            "--cors-allow-private-network requires at least one "
+            "--cors-origin."
+        )
     return args
 
 
@@ -1254,6 +1284,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         middleware = build_cors_middleware(
             args.cors_origin,
             allow_credentials=args.cors_allow_credentials,
+            allow_private_network=args.cors_allow_private_network,
         )
         if middleware:
             run_kwargs["middleware"] = middleware

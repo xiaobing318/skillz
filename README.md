@@ -166,12 +166,27 @@ http://127.0.0.1:8000/mcp
 
 The value passed to `--cors-origin` must match the browser page origin exactly,
 including scheme, host, and port. Repeat `--cors-origin` to allow more than one
-local UI origin. Keep Skillz bound to `127.0.0.1` unless you intentionally want
-other machines to reach it.
+UI origin. If the UI is served over HTTPS from another machine and the browser
+connects back to local Skillz, add `--cors-allow-private-network` so Chrome's
+private-network preflight can succeed for that trusted origin. Keep Skillz bound
+to `127.0.0.1` unless you intentionally want other machines to reach it.
 
 If you do not enable CORS in Skillz, start `llama-server` with
 `--ui-mcp-proxy` and enable `Use llama-server proxy` in the server card after
 adding the URL. That proxy is only for HTTP/HTTPS MCP servers.
+
+Chrome 142 and newer may also require a site permission for HTTPS pages that
+connect to `localhost`, `127.0.0.1`, or other local-network targets. If
+llama-ui shows `Failed to fetch` even though Skillz answers curl or MCP client
+requests, allow local network or apps-on-device access for the llama-ui site in
+Chrome, then refresh the server card. This browser permission is separate from
+Skillz CORS headers.
+
+For a two-computer setup where Chrome and Skillz both run on computer B while
+llama-ui is served from computer A, keep Skillz on `127.0.0.1` and do not enable
+the llama-server proxy in the UI. In that mode `http://127.0.0.1:8000/mcp`
+means computer B, which is exactly where Skillz is running. If you enable the
+proxy, `127.0.0.1` is resolved from the llama-server host instead.
 
 For Windows users, `SetupAndRun/SetupAndRun.ps1` reads
 `SetupAndRun/SetupAndRun.json`, validates it against
@@ -213,6 +228,7 @@ reading support to fetch those files.
 | `--path PATH` | URL path when using the HTTP transport. |
 | `--cors-origin ORIGIN` | Allow a browser origin for HTTP/SSE transports. Repeat for multiple origins. |
 | `--cors-allow-credentials` | Allow credentialed CORS requests. Cannot be used with `--cors-origin '*'`. |
+| `--cors-allow-private-network` | Allow trusted browser origins to pass Chrome private-network preflights. Cannot be used with `--cors-origin '*'`. |
 | `--list-skills` | List discovered skills and exit. |
 | `--verbose` | Emit debug logging to the console. |
 | `--log` | Mirror verbose logs to `.skillz/skillz.log` unless `--log-file` is set. |

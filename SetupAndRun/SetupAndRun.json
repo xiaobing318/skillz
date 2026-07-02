@@ -1,15 +1,18 @@
 {
   "$schema": "./SetupAndRunSchema.json",
-  "skillsRoot": "~/.skillz",
+  "skillsRoot": "E:/softwares/CodexHome/skills",
   "transport": "http",
   "host": "127.0.0.1",
   "port": 8000,
   "path": "/mcp",
   "corsOrigins": [
-    "http://127.0.0.1:8282"
+    "http://127.0.0.1:8282",
+    "https://wpgworkstation-xbyang.tailfa03b9.ts.net"
   ],
   "corsAllowCredentials": false,
+  "corsAllowPrivateNetwork": true,
   "python": {
+    "interpreter": "E:/QGISPackages/QGIS34407-Release/apps/Python312",
     "uvSync": true,
     "frozen": true
   },
