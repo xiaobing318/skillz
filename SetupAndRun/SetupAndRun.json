@@ -1,6 +1,9 @@
 {
   "$schema": "./SetupAndRunSchema.json",
-  "skillsRoot": "E:/softwares/CodexHome/skills",
+  "skillsRoot": [
+    "C:/Softwares/codex/skills",
+    "E:/softwares/CodexHome/skills"
+  ],
   "transport": "http",
   "host": "127.0.0.1",
   "port": 8000,
@@ -12,7 +15,10 @@
   "corsAllowCredentials": false,
   "corsAllowPrivateNetwork": true,
   "python": {
-    "interpreter": "E:/QGISPackages/QGIS34407-Release/apps/Python312",
+    "interpreter": [
+      "C:/Data/QGISPackages/QGIS34407-Release/apps/Python312",
+      "E:/QGISPackages/QGIS34407-Release/apps/Python312"
+    ],
     "uvSync": true,
     "frozen": true
   },

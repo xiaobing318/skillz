@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/intellectronica/skillz/SetupAndRun/SetupAndRunSchema.json",
-  "title": "Skillz SetupAndRun configuration",
+  "title": "Skillz SetupAndRun 配置文件",
+  "description": "用于校验 SetupAndRun.json 的配置结构，适用于 Windows 上通过 SetupAndRun.ps1 启动 Skillz MCP Server，并在 llama-ui / llama-server 中配置 MCP Server 的场景。本 schema 只描述配置字段、类型、默认值和脚本已有校验规则；实际路径解析、Python 解释器探测、uv 调用、环境同步和服务启动由 SetupAndRun.ps1 执行。",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -9,16 +10,23 @@
     "transport",
     "host",
     "port",
-    "path"
+    "path",
+    "python"
   ],
   "properties": {
     "$schema": {
-      "type": "string"
+      "$ref": "#/$defs/nonEmptyString",
+      "description": "本地 schema 文件路径，供编辑器自动提示和 SetupAndRun.ps1 配置校验使用。通常保持 ./SetupAndRunSchema.json 即可。"
     },
     "skillsRoot": {
-      "type": "string",
-      "minLength": 1,
-      "description": "Directory containing Agent Skill folders or .zip/.skill packages."
+      "$ref": "#/$defs/pathCandidateList",
+      "description": "Agent Skills 根目录候选列表。脚本会按数组顺序选择第一个存在的目录，并把最终选中的单个目录作为 Skillz MCP Server 的 skills_root 参数传入；不会合并多个目录。相对路径按 SetupAndRun.json 所在目录解析。",
+      "examples": [
+        [
+          "C:/Softwares/codex/skills",
+          "E:/softwares/CodexHome/skills"
+        ]
+      ]
     },
     "transport": {
       "type": "string",
@@ -26,78 +34,239 @@
         "stdio",
         "http",
         "sse"
-      ]
+      ],
+      "default": "http",
+      "description": "Skillz MCP Server 的传输方式。llama-ui 浏览器接入通常使用 http；stdio 适合命令行 MCP 客户端；sse 用于需要旧式 SSE MCP transport 的客户端。"
     },
     "host": {
-      "type": "string",
-      "minLength": 1
+      "$ref": "#/$defs/nonEmptyString",
+      "default": "127.0.0.1",
+      "description": "HTTP/SSE 服务监听地址。第二台电脑通过 llama-server proxy 访问 A 电脑本机 Skillz 时，通常仍填写 127.0.0.1，因为 proxy 会从 llama-server 所在机器发起请求。",
+      "examples": [
+        "127.0.0.1",
+        "0.0.0.0"
+      ]
     },
     "port": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 65535
+      "maximum": 65535,
+      "default": 8000,
+      "description": "HTTP/SSE 服务监听端口。llama-ui 中的 MCP Server URL 需要与该端口一致，例如 http://127.0.0.1:8000/mcp。"
     },
     "path": {
-      "type": "string",
-      "pattern": "^/",
-      "description": "HTTP MCP endpoint path. Used only when transport is http."
+      "$ref": "#/$defs/nonEmptyString",
+      "default": "/mcp",
+      "description": "HTTP transport 的 MCP endpoint 路径。transport 为 http 时必须以 / 开头，常用值为 /mcp；transport 为 stdio 或 sse 时该字段仍按脚本配置结构保留。"
     },
     "corsOrigins": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      },
-      "uniqueItems": true,
-      "default": []
+      "$ref": "#/$defs/originList",
+      "default": [],
+      "description": "允许浏览器直连 Skillz MCP Server 的 llama-ui origin 列表。浏览器直连时应填写地址栏中的 origin，例如 http://127.0.0.1:8282；启用 llama-server proxy 时，请求由 llama-server 转发，通常不依赖浏览器直连 CORS。",
+      "examples": [
+        [
+          "http://127.0.0.1:8282"
+        ],
+        [
+          "http://127.0.0.1:8282",
+          "https://your-llama-ui.example"
+        ]
+      ]
     },
     "corsAllowCredentials": {
       "type": "boolean",
-      "default": false
+      "default": false,
+      "description": "是否允许浏览器携带 credentials 访问 Skillz MCP Server。设为 true 时，corsOrigins 不能包含通配符 *，这是 SetupAndRun.ps1 已有校验规则。"
     },
     "corsAllowPrivateNetwork": {
       "type": "boolean",
       "default": false,
-      "description": "Respond to trusted browser Private Network Access preflights. Use only with explicit corsOrigins."
+      "description": "是否响应 Chrome Private Network Access 预检。只有浏览器从 HTTPS llama-ui 直接访问本机或局域网 HTTP Skillz 服务时才需要；设为 true 时必须配置至少一个明确 corsOrigins，且不能使用通配符 *。"
     },
     "python": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "interpreter": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Python executable path, or a directory containing python.exe/python.cmd/python.bat. Relative paths are resolved from the config file directory."
-        },
-        "uvSync": {
-          "type": "boolean",
-          "default": true
-        },
-        "frozen": {
-          "type": "boolean",
-          "default": true
+      "$ref": "#/$defs/pythonConfig",
+      "description": "Python 和 uv 配置。SetupAndRun.ps1 只会通过 python.interpreter 候选列表选中的解释器执行 python -m uv，不会从 PATH 查找 uv。"
+    },
+    "logging": {
+      "$ref": "#/$defs/loggingConfig",
+      "description": "Skillz 运行日志配置。未配置 logging 时，脚本按默认值运行；启用 log 后可通过 logPath 指定日志文件。"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "transport"
+        ],
+        "properties": {
+          "transport": {
+            "const": "http"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/httpPath"
+          }
         }
       }
     },
-    "logging": {
+    {
+      "if": {
+        "required": [
+          "corsAllowCredentials"
+        ],
+        "properties": {
+          "corsAllowCredentials": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "corsOrigins": {
+            "not": {
+              "contains": {
+                "const": "*"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "corsAllowPrivateNetwork"
+        ],
+        "properties": {
+          "corsAllowPrivateNetwork": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "corsOrigins"
+        ],
+        "properties": {
+          "corsOrigins": {
+            "minItems": 1,
+            "not": {
+              "contains": {
+                "const": "*"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pathCandidateList": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "uniqueItems": true
+    },
+    "httpPath": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "originList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "uniqueItems": true
+    },
+    "pythonConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interpreter"
+      ],
+      "properties": {
+        "interpreter": {
+          "$ref": "#/$defs/pathCandidateList",
+          "description": "Python 解释器候选列表。每个候选可以是 Python 解释器路径，或包含 python.exe、python.cmd、python.bat 的目录。脚本会按数组顺序选择第一个可解析且能运行 python -m uv 的候选；相对路径按 SetupAndRun.json 所在目录解析。",
+          "examples": [
+            [
+              "E:/QGISPackages/QGIS34407-Release/apps/Python312",
+              "C:/Data/QGISPackages/QGIS34407-Release/apps/Python312"
+            ]
+          ]
+        },
+        "uvSync": {
+          "type": "boolean",
+          "default": true,
+          "description": "启动前是否执行 uv sync。true 表示在仓库根目录同步 Python 环境；命令行 -SkipSync 可临时跳过。"
+        },
+        "frozen": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否向 uv sync / uv run 追加 --frozen。true 表示严格使用锁定依赖，适合可复现运行；false 允许 uv 按当前配置解析依赖。"
+        }
+      }
+    },
+    "loggingConfig": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "verbose": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "是否向 Skillz 传入 --verbose，输出更详细的调试日志。"
         },
         "log": {
           "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "是否向 Skillz 传入 --log，将详细日志写入文件。"
         },
         "logPath": {
-          "type": "string",
-          "minLength": 1,
+          "$ref": "#/$defs/nonEmptyString",
           "default": ".skillz/skillz.log",
-          "description": "Log file path used when logging.log is true."
+          "description": "启用 logging.log 后使用的日志文件路径。未填写时脚本默认使用仓库根目录下的 .skillz/skillz.log。"
         }
       }
     }
-  }
+  },
+  "examples": [
+    {
+      "$schema": "./SetupAndRunSchema.json",
+      "skillsRoot": [
+        "C:/Softwares/codex/skills",
+        "E:/softwares/CodexHome/skills"
+      ],
+      "transport": "http",
+      "host": "127.0.0.1",
+      "port": 8000,
+      "path": "/mcp",
+      "corsOrigins": [
+        "http://127.0.0.1:8282"
+      ],
+      "corsAllowCredentials": false,
+      "corsAllowPrivateNetwork": false,
+      "python": {
+        "interpreter": [
+          "E:/QGISPackages/QGIS34407-Release/apps/Python312",
+          "C:/Data/QGISPackages/QGIS34407-Release/apps/Python312"
+        ],
+        "uvSync": true,
+        "frozen": true
+      },
+      "logging": {
+        "verbose": false,
+        "log": false,
+        "logPath": ".skillz/skillz.log"
+      }
+    }
+  ]
 }

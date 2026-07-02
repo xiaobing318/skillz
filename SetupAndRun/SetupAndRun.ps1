@@ -25,13 +25,16 @@ Options:
   -ConfigureOnly      Run the environment setup phase and then stop.
   -SkipSync           Skip 'uv sync'. Useful when the virtual environment is already ready.
   -NoLaunch           Build and print the Skillz command without starting it.
-  -PrintCommand       Print the resolved Skillz command before running it.
+  -PrintCommand       Print resolved diagnostic commands.
   -Help               Show this help text.
 
 Configuration:
-  python.interpreter may point to a Python executable, or to a directory
-  containing python.exe, python.cmd, or python.bat. Relative paths are
-  resolved from the JSON config file directory.
+  skillsRoot and python.interpreter must be arrays of candidate paths. The
+  script selects the first usable candidate in order. python.interpreter
+  candidates may point to a Python executable, or to a directory containing
+  python.exe, python.cmd, or python.bat. Relative paths are resolved from the
+  JSON config file directory. uv is always run through the selected interpreter
+  with 'python -m uv'; PATH uv is not used.
 "@
 }
 
@@ -202,7 +205,8 @@ function Get-ConfigStringArray {
     param(
         [object]$Object,
         [Parameter(Mandatory = $true)][string]$Name,
-        [string]$DisplayName
+        [string]$DisplayName,
+        [bool]$Required = $false
     )
 
     if ([string]::IsNullOrWhiteSpace($DisplayName)) {
@@ -210,11 +214,17 @@ function Get-ConfigStringArray {
     }
 
     if ($null -eq $Object) {
+        if ($Required) {
+            throw "Config field '$DisplayName' is required."
+        }
         return @()
     }
 
     $property = $Object.PSObject.Properties[$Name]
     if ($null -eq $property) {
+        if ($Required) {
+            throw "Config field '$DisplayName' is required."
+        }
         return @()
     }
 
@@ -232,6 +242,10 @@ function Get-ConfigStringArray {
             throw "Config field '$DisplayName' must not contain duplicate values."
         }
         $items += $item
+    }
+
+    if ($Required -and $items.Count -eq 0) {
+        throw "Config field '$DisplayName' must contain at least one value."
     }
 
     return $items
@@ -284,6 +298,37 @@ function Resolve-PythonInterpreter {
     )
 }
 
+function Resolve-ExistingDirectoryCandidate {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Candidates,
+        [Parameter(Mandatory = $true)][string]$BaseDirectory,
+        [Parameter(Mandatory = $true)][string]$DisplayName
+    )
+
+    $errors = @()
+    foreach ($candidate in $Candidates) {
+        $resolved = Resolve-ConfigPathValue `
+            -Value $candidate `
+            -BaseDirectory $BaseDirectory
+
+        if (Test-Path -LiteralPath $resolved -PathType Container) {
+            return (Resolve-Path -LiteralPath $resolved).Path
+        }
+
+        if (Test-Path -LiteralPath $resolved) {
+            $errors += "$candidate -> $resolved is not a directory"
+        }
+        else {
+            $errors += "$candidate -> $resolved was not found"
+        }
+    }
+
+    throw (
+        "No usable $DisplayName candidate found. Tried: " +
+        ($errors -join "; ")
+    )
+}
+
 function Test-PythonUv {
     param([Parameter(Mandatory = $true)][string]$PythonPath)
 
@@ -309,6 +354,32 @@ function Test-PythonUv {
     }
 
     $null = $uvOutput
+}
+
+function Resolve-FirstPythonInterpreter {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Candidates,
+        [Parameter(Mandatory = $true)][string]$BaseDirectory
+    )
+
+    $errors = @()
+    foreach ($candidate in $Candidates) {
+        try {
+            $pythonPath = Resolve-PythonInterpreter `
+                -Interpreter $candidate `
+                -BaseDirectory $BaseDirectory
+            Test-PythonUv $pythonPath
+            return $pythonPath
+        }
+        catch {
+            $errors += "${candidate}: $($_.Exception.Message)"
+        }
+    }
+
+    throw (
+        "No usable python.interpreter candidate found. Tried: " +
+        ($errors -join "; ")
+    )
 }
 
 function Read-JsonConfig {
@@ -354,7 +425,7 @@ function Test-SkillzConfig {
         'logging'
     ) "config"
 
-    $skillsRoot = Get-ConfigString $Config "skillsRoot" $true "skillsRoot"
+    $skillsRoot = @(Get-ConfigStringArray $Config "skillsRoot" "skillsRoot" $true)
     $transport = Get-ConfigString $Config "transport" $true "transport"
     if ($transport -notin @("stdio", "http", "sse")) {
         throw "Config field 'transport' must be one of: stdio, http, sse."
@@ -386,12 +457,13 @@ function Test-SkillzConfig {
     }
 
     $pythonConfig = Get-ConfigObject $Config "python" "python"
-    if ($null -ne $pythonConfig) {
-        Assert-KnownProperties $pythonConfig @("interpreter", "uvSync", "frozen") "config.python"
-        $null = Get-ConfigString $pythonConfig "interpreter" $false "python.interpreter"
-        $null = Get-ConfigBoolean $pythonConfig "uvSync" $true "python.uvSync"
-        $null = Get-ConfigBoolean $pythonConfig "frozen" $true "python.frozen"
+    if ($null -eq $pythonConfig) {
+        throw "Config field 'python' is required."
     }
+    Assert-KnownProperties $pythonConfig @("interpreter", "uvSync", "frozen") "config.python"
+    $null = @(Get-ConfigStringArray $pythonConfig "interpreter" "python.interpreter" $true)
+    $null = Get-ConfigBoolean $pythonConfig "uvSync" $true "python.uvSync"
+    $null = Get-ConfigBoolean $pythonConfig "frozen" $true "python.frozen"
 
     $loggingConfig = Get-ConfigObject $Config "logging" "logging"
     if ($null -ne $loggingConfig) {
@@ -434,26 +506,17 @@ $pythonConfig = Get-ConfigObject $config "python" "python"
 $loggingConfig = Get-ConfigObject $config "logging" "logging"
 $frozen = Get-ConfigBoolean $pythonConfig "frozen" $true "python.frozen"
 $uvSync = Get-ConfigBoolean $pythonConfig "uvSync" $true "python.uvSync"
-$pythonInterpreterConfig = Get-ConfigString $pythonConfig "interpreter" $false "python.interpreter"
-$pythonInterpreter = $null
-$uvCommand = $null
-$uvPrefixArgs = @()
-
-if ($null -ne $pythonInterpreterConfig) {
-    $pythonInterpreter = Resolve-PythonInterpreter `
-        -Interpreter $pythonInterpreterConfig `
-        -BaseDirectory $configDirectory
-    Test-PythonUv $pythonInterpreter
-    $uvCommand = $pythonInterpreter
-    $uvPrefixArgs = @("-m", "uv")
-}
-else {
-    $uv = Get-Command uv -ErrorAction SilentlyContinue
-    if ($null -eq $uv) {
-        throw "uv was not found on PATH. Install uv first: https://docs.astral.sh/uv/"
-    }
-    $uvCommand = $uv.Source
-}
+$skillsRootCandidates = @(Get-ConfigStringArray $config "skillsRoot" "skillsRoot" $true)
+$skillsRoot = Resolve-ExistingDirectoryCandidate `
+    -Candidates $skillsRootCandidates `
+    -BaseDirectory $configDirectory `
+    -DisplayName "skillsRoot"
+$pythonInterpreterCandidates = @(Get-ConfigStringArray $pythonConfig "interpreter" "python.interpreter" $true)
+$pythonInterpreter = Resolve-FirstPythonInterpreter `
+    -Candidates $pythonInterpreterCandidates `
+    -BaseDirectory $configDirectory
+$uvCommand = $pythonInterpreter
+$uvPrefixArgs = @("-m", "uv")
 
 if ($uvSync -and -not $SkipSync) {
     $syncArgs = @($uvPrefixArgs)
@@ -466,7 +529,9 @@ if ($uvSync -and -not $SkipSync) {
         $syncArgs += "--frozen"
     }
 
+    $syncCommandLine = Format-CommandLine $uvCommand $syncArgs
     Write-Host "Configuring Python environment in $repoRoot"
+    Write-Host "Python environment command: $syncCommandLine"
     Push-Location $repoRoot
     try {
         & $uvCommand @syncArgs
@@ -477,6 +542,9 @@ if ($uvSync -and -not $SkipSync) {
 }
 else {
     Write-Host "Skipping Python environment setup"
+    if ($PrintCommand) {
+        Write-Host "Python environment command: skipped"
+    }
 }
 
 if ($ConfigureOnly) {
@@ -498,7 +566,7 @@ if ($frozen) {
 }
 
 $runArgs += "skillz"
-$runArgs += [string]$config.skillsRoot
+$runArgs += $skillsRoot
 $runArgs += "--transport"
 $runArgs += $transport
 
@@ -552,9 +620,7 @@ else {
 
 Write-Host "Skillz MCP endpoint: $endpoint"
 
-if ($PrintCommand -or $NoLaunch) {
-    Write-Host $commandLine
-}
+Write-Host "Skillz MCP command: $commandLine"
 
 if ($NoLaunch) {
     exit 0
