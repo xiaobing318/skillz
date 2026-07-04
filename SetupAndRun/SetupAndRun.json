@@ -1,8 +1,7 @@
 {
   "$schema": "./SetupAndRunSchema.json",
   "skillsRoot": [
-    "C:/Data/QGISData/Skills",
-    "E:/softwares/CodexHome/skills"
+    "../Skills"
   ],
   "transport": "http",
   "host": "127.0.0.1",

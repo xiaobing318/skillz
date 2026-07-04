@@ -1,0 +1,89 @@
+{
+  "skill": "qgis-vector-merge-deduplicate-index",
+  "kind": "vector",
+  "qgis_root": "C:\\Data\\QGISPackages\\QGIS34407-Release",
+  "test_root": "C:\\Data\\QGISData\\TestData\\qgis-vector-merge-deduplicate-index",
+  "required_directories": [
+    "input",
+    "output",
+    "logs",
+    "chrome-prompts"
+  ],
+  "logging_rule": "每一步都写独立日志，下一步前读取日志判断。",
+  "encoding_policy": {
+    "applies_to": "vector_attributes",
+    "source_encodings": [
+      "UTF-8",
+      "GBK",
+      "CP936",
+      "ISO-8859-1",
+      "Windows-1252",
+      "unknown"
+    ],
+    "target_encoding": "UTF-8",
+    "required_log_fields": [
+      "source_encoding",
+      "target_encoding",
+      "input",
+      "output",
+      "status"
+    ],
+    "output_rule": "Shapefile 输出写 .cpg=UTF-8；GPKG/GeoJSON 在摘要中记录为 UTF-8 安全容器。"
+  },
+  "steps": [
+    {
+      "index": 1,
+      "name": "准备合并任务",
+      "tool": "exec_shell_command",
+      "log": "logs/step-01-prepare.log"
+    },
+    {
+      "index": 2,
+      "name": "扫描源文件",
+      "tool": "exec_shell_command",
+      "log": "logs/step-02-scan.log"
+    },
+    {
+      "index": 3,
+      "name": "探测并统一字符集",
+      "tool": "exec_shell_command",
+      "log": "logs/step-03-encoding.log"
+    },
+    {
+      "index": 4,
+      "name": "结构一致性检查",
+      "tool": "exec_shell_command",
+      "log": "logs/step-04-schema.log"
+    },
+    {
+      "index": 5,
+      "name": "统一字段和 CRS",
+      "tool": "exec_shell_command",
+      "log": "logs/step-05-normalize.log"
+    },
+    {
+      "index": 6,
+      "name": "合并图层",
+      "tool": "exec_shell_command",
+      "log": "logs/step-06-merge.log"
+    },
+    {
+      "index": 7,
+      "name": "去重",
+      "tool": "exec_shell_command",
+      "log": "logs/step-07-dedup.log"
+    },
+    {
+      "index": 8,
+      "name": "可选溶解",
+      "tool": "exec_shell_command",
+      "log": "logs/step-08-dissolve.log"
+    },
+    {
+      "index": 9,
+      "name": "建立索引和摘要",
+      "tool": "exec_shell_command",
+      "log": "logs/step-09-index-summary.log"
+    }
+  ]
+}

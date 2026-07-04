@@ -1,0 +1,89 @@
+{
+  "skill": "qgis-vector-quality-repair-export",
+  "kind": "vector",
+  "qgis_root": "C:\\Data\\QGISPackages\\QGIS34407-Release",
+  "test_root": "C:\\Data\\QGISData\\TestData\\qgis-vector-quality-repair-export",
+  "required_directories": [
+    "input",
+    "output",
+    "logs",
+    "chrome-prompts"
+  ],
+  "logging_rule": "每一步都写独立日志，下一步前读取日志判断。",
+  "encoding_policy": {
+    "applies_to": "vector_attributes",
+    "source_encodings": [
+      "UTF-8",
+      "GBK",
+      "CP936",
+      "ISO-8859-1",
+      "Windows-1252",
+      "unknown"
+    ],
+    "target_encoding": "UTF-8",
+    "required_log_fields": [
+      "source_encoding",
+      "target_encoding",
+      "input",
+      "output",
+      "status"
+    ],
+    "output_rule": "Shapefile 输出写 .cpg=UTF-8；GPKG/GeoJSON 在摘要中记录为 UTF-8 安全容器。"
+  },
+  "steps": [
+    {
+      "index": 1,
+      "name": "建立任务目录",
+      "tool": "exec_shell_command",
+      "log": "logs/step-01-prepare.log"
+    },
+    {
+      "index": 2,
+      "name": "扫描输入数据",
+      "tool": "exec_shell_command",
+      "log": "logs/step-02-scan.log"
+    },
+    {
+      "index": 3,
+      "name": "探测并统一字符集",
+      "tool": "exec_shell_command",
+      "log": "logs/step-03-encoding.log"
+    },
+    {
+      "index": 4,
+      "name": "读取元信息",
+      "tool": "exec_shell_command",
+      "log": "logs/step-04-metadata.log"
+    },
+    {
+      "index": 5,
+      "name": "检查字段和空几何",
+      "tool": "exec_shell_command",
+      "log": "logs/step-05-quality.log"
+    },
+    {
+      "index": 6,
+      "name": "修复几何",
+      "tool": "exec_shell_command",
+      "log": "logs/step-06-repair.log"
+    },
+    {
+      "index": 7,
+      "name": "统一坐标系",
+      "tool": "exec_shell_command",
+      "log": "logs/step-07-reproject.log"
+    },
+    {
+      "index": 8,
+      "name": "导出成果",
+      "tool": "exec_shell_command",
+      "log": "logs/step-08-export.log"
+    },
+    {
+      "index": 9,
+      "name": "汇总并清理",
+      "tool": "exec_shell_command",
+      "log": "logs/step-09-summary.log"
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "skill": "qgis-raster-mosaic-clip-overview",
+  "kind": "raster",
+  "qgis_root": "C:\\Data\\QGISPackages\\QGIS34407-Release",
+  "test_root": "C:\\Data\\QGISData\\TestData\\qgis-raster-mosaic-clip-overview",
+  "required_directories": [
+    "input",
+    "output",
+    "logs",
+    "chrome-prompts"
+  ],
+  "logging_rule": "每一步都写独立日志，下一步前读取日志判断。",
+  "encoding_policy": {
+    "applies_to": "text_artifacts",
+    "target_encoding": "UTF-8",
+    "required_artifacts": [
+      "csv",
+      "json",
+      "log",
+      "report"
+    ]
+  },
+  "steps": [
+    {
+      "index": 1,
+      "name": "准备目录",
+      "tool": "exec_shell_command",
+      "log": "logs/step-01-prepare.log"
+    },
+    {
+      "index": 2,
+      "name": "检查瓦片",
+      "tool": "exec_shell_command",
+      "log": "logs/step-02-tiles.log"
+    },
+    {
+      "index": 3,
+      "name": "构建 VRT",
+      "tool": "exec_shell_command",
+      "log": "logs/step-03-vrt.log"
+    },
+    {
+      "index": 4,
+      "name": "生成镶嵌图",
+      "tool": "exec_shell_command",
+      "log": "logs/step-04-mosaic.log"
+    },
+    {
+      "index": 5,
+      "name": "掩膜裁剪",
+      "tool": "exec_shell_command",
+      "log": "logs/step-05-clip.log"
+    },
+    {
+      "index": 6,
+      "name": "建立概览",
+      "tool": "exec_shell_command",
+      "log": "logs/step-06-overview.log"
+    },
+    {
+      "index": 7,
+      "name": "写摘要",
+      "tool": "exec_shell_command",
+      "log": "logs/step-07-summary.log"
+    }
+  ]
+}

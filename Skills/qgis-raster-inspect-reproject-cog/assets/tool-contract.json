@@ -1,0 +1,67 @@
+{
+  "skill": "qgis-raster-inspect-reproject-cog",
+  "kind": "raster",
+  "qgis_root": "C:\\Data\\QGISPackages\\QGIS34407-Release",
+  "test_root": "C:\\Data\\QGISData\\TestData\\qgis-raster-inspect-reproject-cog",
+  "required_directories": [
+    "input",
+    "output",
+    "logs",
+    "chrome-prompts"
+  ],
+  "logging_rule": "每一步都写独立日志，下一步前读取日志判断。",
+  "encoding_policy": {
+    "applies_to": "text_artifacts",
+    "target_encoding": "UTF-8",
+    "required_artifacts": [
+      "csv",
+      "json",
+      "log",
+      "report"
+    ]
+  },
+  "steps": [
+    {
+      "index": 1,
+      "name": "准备输出目录",
+      "tool": "exec_shell_command",
+      "log": "logs/step-01-prepare.log"
+    },
+    {
+      "index": 2,
+      "name": "读取元信息",
+      "tool": "exec_shell_command",
+      "log": "logs/step-02-info.log"
+    },
+    {
+      "index": 3,
+      "name": "计算统计值",
+      "tool": "exec_shell_command",
+      "log": "logs/step-03-stats.log"
+    },
+    {
+      "index": 4,
+      "name": "检查 NoData",
+      "tool": "exec_shell_command",
+      "log": "logs/step-04-nodata.log"
+    },
+    {
+      "index": 5,
+      "name": "重投影",
+      "tool": "exec_shell_command",
+      "log": "logs/step-05-warp.log"
+    },
+    {
+      "index": 6,
+      "name": "导出 COG",
+      "tool": "exec_shell_command",
+      "log": "logs/step-06-cog.log"
+    },
+    {
+      "index": 7,
+      "name": "最终校验",
+      "tool": "exec_shell_command",
+      "log": "logs/step-07-summary.log"
+    }
+  ]
+}
