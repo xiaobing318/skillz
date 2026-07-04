@@ -27,7 +27,27 @@ cd PathToDir\skillz
 powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1 -SkipSync -NoLaunch -PrintCommand
 ```
 
-**场景三：运行测试用例**
+**场景三：只停止旧服务**
+```powershell
+# 进入到指定目录
+cd PathToDir\skillz
+# 仅停止配置端口上的同一个 Skillz 服务，不重新启动
+powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1 -StopOnly
+```
+
+**场景四：清理旧服务后启动**
+```powershell
+# 进入到指定目录
+cd PathToDir\skillz
+# 仅当确认旧的同端口监听者就是同一个 Skillz 服务时使用
+powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1 -SkipSync -StopExisting
+```
+
+脚本在真正启动 HTTP/SSE 服务前会检查配置端口是否已被监听。默认行为是拒绝启动并打印脱敏后的监听进程信息，不会自动杀进程。传入 `-StopExisting` 时，脚本只会停止命令行中能识别为同一 `skillsRoot` 和同一端口的 Skillz 监听进程，然后继续启动。传入 `-StopOnly` 时只执行同样的安全停止逻辑，然后退出，不重新启动。`-StopOnly` 只要求配置中存在停止服务需要的 `transport`、`port` 和 `skillsRoot` 字段，不要求 Python 环境配置可用。如果端口被其它程序占用，或路径只是前缀相似但不是同一个 `skillsRoot`，会拒绝停止，避免误杀。
+
+HTTP/SSE 服务启动后，脚本会把本次启动的 `uv`、Python 和 Skillz 子进程放入 Windows Job Object 中，并在脚本退出时执行清理。正常退出、按 `Ctrl+C`、关闭当前终端或由 Codex 中止父脚本时，都会尽量关闭本次启动的进程树并释放端口。若需要刷新 Skills 或重新做 Chrome 页面测试，先执行 `-StopOnly`，确认旧服务关闭后再重新启动。
+
+**场景五：运行测试用例**
 ```powershell
 # 进入到指定目录
 cd PathToDir\skillz

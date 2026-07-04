@@ -25,17 +25,18 @@ function Quote-ProcessArgument {
     return '"' + ($Value -replace '"', '\"') + '"'
 }
 
-function Invoke-SetupAndRun {
+function New-SetupAndRunProcessStartInfo {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [bool]$RedirectOutput = $true
     )
 
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = "powershell.exe"
     $psi.WorkingDirectory = $WorkingDirectory
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
+    $psi.RedirectStandardOutput = $RedirectOutput
+    $psi.RedirectStandardError = $RedirectOutput
     $psi.UseShellExecute = $false
     $allArguments = @(
         "-NoProfile",
@@ -49,6 +50,18 @@ function Invoke-SetupAndRun {
     }
     $psi.Arguments = (($allArguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " ")
 
+    return $psi
+}
+
+function Invoke-SetupAndRun {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    $psi = New-SetupAndRunProcessStartInfo `
+        -Arguments $Arguments `
+        -WorkingDirectory $WorkingDirectory
     $process = [System.Diagnostics.Process]::Start($psi)
     $stdout = $process.StandardOutput.ReadToEnd()
     $stderr = $process.StandardError.ReadToEnd()
@@ -59,6 +72,19 @@ function Invoke-SetupAndRun {
         Stdout = $stdout
         Stderr = $stderr
     }
+}
+
+function Start-SetupAndRunProcess {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    $psi = New-SetupAndRunProcessStartInfo `
+        -Arguments $Arguments `
+        -WorkingDirectory $WorkingDirectory `
+        -RedirectOutput $false
+    return [System.Diagnostics.Process]::Start($psi)
 }
 
 function Get-JsonMember {
@@ -387,7 +413,8 @@ function Write-TestConfig {
 function Write-InterpreterTestConfig {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Interpreter
+        [Parameter(Mandatory = $true)][string]$Interpreter,
+        [int]$Port = 8765
     )
 
     $json = @"
@@ -397,7 +424,7 @@ function Write-InterpreterTestConfig {
   ],
   "transport": "http",
   "host": "127.0.0.1",
-  "port": 8765,
+  "port": $Port,
   "path": "/mcp",
   "corsOrigins": ["http://127.0.0.1:8282"],
   "corsAllowCredentials": false,
@@ -416,6 +443,164 @@ function Write-InterpreterTestConfig {
 }
 "@
     Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
+}
+
+function New-LoopbackTcpListener {
+    $listener = [System.Net.Sockets.TcpListener]::new(
+        [System.Net.IPAddress]::Loopback,
+        0
+    )
+    $listener.Start()
+    return [pscustomobject]@{
+        Listener = $listener
+        Port = [int]$listener.LocalEndpoint.Port
+    }
+}
+
+function Start-TestListenerProcess {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [string[]]$ExtraArguments = @()
+    )
+
+    $script = @"
+`$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+`$listener.Start()
+try {
+  while (`$true) {
+    Start-Sleep -Milliseconds 250
+  }
+}
+finally {
+  `$listener.Stop()
+}
+"@
+    $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $processInfo.FileName = "powershell.exe"
+    $processInfo.UseShellExecute = $false
+    $processInfo.CreateNoWindow = $true
+    $arguments = @("-NoProfile", "-Command", $script) + $ExtraArguments
+    $processInfo.Arguments = (($arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " ")
+    $process = [System.Diagnostics.Process]::Start($processInfo)
+
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 100
+        if ($process.HasExited) {
+            throw "Listener process exited before opening port $Port."
+        }
+        $connections = @(
+            Get-NetTCPConnection `
+                -LocalPort $Port `
+                -State Listen `
+                -ErrorAction SilentlyContinue |
+                Where-Object { $_.OwningProcess -eq $process.Id }
+        )
+    } while ($connections.Count -eq 0 -and (Get-Date) -lt $deadline)
+
+    if ($connections.Count -eq 0) {
+        Stop-TestProcess $process
+        throw "Listener process did not open port $Port."
+    }
+
+    return $process
+}
+
+function Stop-TestProcess {
+    param([System.Diagnostics.Process]$Process)
+
+    if ($null -ne $Process -and -not $Process.HasExited) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        $Process.WaitForExit(5000) | Out-Null
+    }
+}
+
+function Remove-TestDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            return
+        }
+        catch {
+            if ($attempt -eq 30) {
+                throw
+            }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
+function Wait-ListeningPort {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        Start-Sleep -Milliseconds 100
+        $connections = @(
+            Get-NetTCPConnection `
+                -LocalPort $Port `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+        )
+        if ($connections.Count -gt 0) {
+            return $connections
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    return @()
+}
+
+function Wait-PortReleased {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        Start-Sleep -Milliseconds 100
+        $connections = @(
+            Get-NetTCPConnection `
+                -LocalPort $Port `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+        )
+        if ($connections.Count -eq 0) {
+            return $true
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    return $false
+}
+
+function Wait-NoProcessCommandLineMatch {
+    param(
+        [Parameter(Mandatory = $true)][string]$Pattern,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        Start-Sleep -Milliseconds 100
+        $matches = @(
+            Get-CimInstance Win32_Process |
+                Where-Object {
+                    $_.ProcessId -ne $PID -and
+                    $null -ne $_.CommandLine -and
+                    $_.CommandLine -match $Pattern
+                }
+        )
+        if ($matches.Count -eq 0) {
+            return $true
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    return $false
 }
 
 function Write-CandidateTestConfig {
@@ -457,6 +642,8 @@ $silentPythonDir = Join-Path $tempRoot "silent-python"
 $spacePythonDir = Join-Path $tempRoot "mock python"
 $emptyPythonDir = Join-Path $tempRoot "empty-python"
 $badPythonDir = Join-Path $tempRoot "bad-python"
+$exitPythonDir = Join-Path $tempRoot "exit-python"
+$longPythonDir = Join-Path $tempRoot "long-python"
 $script:SkillsRoot = Join-Path $tempRoot "skills"
 $otherSkillsRoot = Join-Path $tempRoot "other-skills"
 $configPath = Join-Path $tempRoot "SetupAndRun.test.json"
@@ -470,6 +657,8 @@ try {
         $spacePythonDir, `
         $emptyPythonDir, `
         $badPythonDir, `
+        $exitPythonDir, `
+        $longPythonDir, `
         $script:SkillsRoot, `
         $otherSkillsRoot `
         | Out-Null
@@ -525,6 +714,50 @@ echo BAD_PYTHON %*
 exit /b 0
 "@
 
+    $exitPython = Join-Path $exitPythonDir "python.cmd"
+    Set-Content -LiteralPath $exitPython -Encoding ASCII -Value @"
+@echo off
+if "%1"=="-m" if "%2"=="uv" if "%3"=="--version" (
+  echo EXIT_PYTHON_UV_VERSION
+  exit /b 0
+)
+echo EXIT_PYTHON_RUN
+exit /b 37
+"@
+
+    $longPython = Join-Path $longPythonDir "python.cmd"
+    $longPythonScript = Join-Path $longPythonDir "python.ps1"
+    Set-Content -LiteralPath $longPython -Encoding ASCII -Value @"
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0python.ps1" %*
+exit /b %ERRORLEVEL%
+"@
+    Set-Content -LiteralPath $longPythonScript -Encoding UTF8 -Value @'
+if ($args.Count -ge 3 -and $args[0] -eq "-m" -and $args[1] -eq "uv" -and $args[2] -eq "--version") {
+    Write-Output "LONG_PYTHON_UV_VERSION"
+    exit 0
+}
+
+$portIndex = [Array]::IndexOf($args, "--port")
+if ($portIndex -lt 0 -or $portIndex + 1 -ge $args.Count) {
+    Write-Error "Missing --port for long-running mock Python."
+    exit 2
+}
+
+$port = [int]$args[$portIndex + 1]
+$listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
+$listener.Start()
+Write-Output "LONG_PYTHON_LISTENING $port"
+try {
+    while ($true) {
+        Start-Sleep -Milliseconds 250
+    }
+}
+finally {
+    $listener.Stop()
+}
+'@
+
     $env:PATH = "$mockBin;$oldPath"
 
     $result = Invoke-SetupAndRun -Arguments @("-Help") -WorkingDirectory $tempRoot
@@ -532,6 +765,8 @@ exit /b 0
     Assert-True ($result.Stdout -match "SetupAndRun.ps1") "Help output should name script."
     Assert-True ($result.Stdout -match "Print resolved diagnostic commands") `
         "Help should describe PrintCommand as diagnostic command output."
+    Assert-True ($result.Stdout -match "StopExisting") `
+        "Help should describe the safe stale Skillz listener cleanup option."
 
     $result = Invoke-SetupAndRun -Arguments @("-NoSuchParameter") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Unknown parameter should fail."
@@ -608,6 +843,231 @@ exit /b 0
     Assert-True ($result.Stdout -match "-m uv run --directory") "Printed command should run uv as a Python module."
     Assert-True ($result.Stdout -match "--python") "Printed command should pass --python to uv run."
     Assert-True ($result.Stdout -notmatch "MOCK_UV") "NoLaunch should not use PATH uv."
+
+    $listener = New-LoopbackTcpListener
+    try {
+        Write-InterpreterTestConfig `
+            -Path $configPath `
+            -Interpreter "silent-python" `
+            -Port $listener.Port
+
+        $result = Invoke-SetupAndRun `
+            -Arguments @("-ConfigPath", $configPath, "-SkipSync") `
+            -WorkingDirectory $tempRoot
+        Assert-True ($result.ExitCode -ne 0) "Launch should fail when the configured port is already in use."
+        Assert-True ($result.Stderr -match "already in use") "Port-in-use error should be readable."
+        Assert-True ($result.Stderr -match "StopExisting") "Port-in-use error should mention StopExisting."
+        Assert-True ($result.Stdout -notmatch "MOCK_SILENT_PYTHON_EXECUTED") `
+            "Launch should fail before executing the mock server command."
+
+        $result = Invoke-SetupAndRun `
+            -Arguments @("-ConfigPath", $configPath) `
+            -WorkingDirectory $tempRoot
+        Assert-True ($result.ExitCode -ne 0) "Launch should check the configured port before environment setup."
+        Assert-True ($result.Stdout -notmatch "Python environment command:") `
+            "Port-in-use failure should happen before uv sync output."
+
+        $result = Invoke-SetupAndRun `
+            -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") `
+            -WorkingDirectory $tempRoot
+        Assert-True ($result.ExitCode -eq 0) "NoLaunch should not require the configured port to be free."
+        Assert-True ($result.Stdout -match "Skillz MCP command:") "NoLaunch should still print the command when port is occupied."
+
+        $result = Invoke-SetupAndRun `
+            -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-StopExisting") `
+            -WorkingDirectory $tempRoot
+        Assert-True ($result.ExitCode -ne 0) "StopExisting should refuse to stop a non-Skillz listener."
+        Assert-True ($result.Stderr -match "not recognized") `
+            "StopExisting should explain why the occupied port was not stopped."
+
+        $result = Invoke-SetupAndRun `
+            -Arguments @("-ConfigPath", $configPath, "-StopOnly") `
+            -WorkingDirectory $tempRoot
+        Assert-True ($result.ExitCode -ne 0) "StopOnly should refuse to stop a non-Skillz listener."
+        Assert-True ($result.Stderr -match "not recognized") `
+            "StopOnly should explain why the occupied port was not stopped."
+    }
+    finally {
+        $listener.Listener.Stop()
+    }
+
+    $prefixSkillsRoot = "$($script:SkillsRoot)-old"
+    New-Item -ItemType Directory -Path $prefixSkillsRoot | Out-Null
+    $prefixProbe = New-LoopbackTcpListener
+    $prefixPort = $prefixProbe.Port
+    $prefixProbe.Listener.Stop()
+    $prefixProcess = $null
+    try {
+        $prefixProcess = Start-TestListenerProcess `
+            -Port $prefixPort `
+            -ExtraArguments @(
+                "skillz",
+                $prefixSkillsRoot,
+                "--port",
+                [string]$prefixPort,
+                "--api-key",
+                "SHOULD_NOT_APPEAR"
+            )
+        Write-InterpreterTestConfig `
+            -Path $configPath `
+            -Interpreter "missing-python" `
+            -Port $prefixPort
+
+        $result = Invoke-SetupAndRun `
+            -Arguments @("-ConfigPath", $configPath, "-StopOnly") `
+            -WorkingDirectory $tempRoot
+        Assert-True ($result.ExitCode -ne 0) `
+            "StopOnly should refuse a Skillz-like listener with a prefix-colliding skillsRoot."
+        Assert-True ($result.Stderr -match "not recognized") `
+            "Prefix-colliding listener error should be readable."
+        Assert-True ($result.Stderr -notmatch "SHOULD_NOT_APPEAR") `
+            "Listener diagnostics should redact sensitive argument values."
+        Assert-True (-not $prefixProcess.HasExited) `
+            "Prefix-colliding listener should not be stopped."
+    }
+    finally {
+        Stop-TestProcess $prefixProcess
+    }
+
+    $matchingProbe = New-LoopbackTcpListener
+    $matchingPort = $matchingProbe.Port
+    $matchingProbe.Listener.Stop()
+    $matchingProcess = $null
+    try {
+        $matchingProcess = Start-TestListenerProcess `
+            -Port $matchingPort `
+            -ExtraArguments @(
+                "skillz",
+                $script:SkillsRoot,
+                "--port",
+                [string]$matchingPort
+            )
+        Write-InterpreterTestConfig `
+            -Path $configPath `
+            -Interpreter "missing-python" `
+            -Port $matchingPort
+
+        $result = Invoke-SetupAndRun `
+            -Arguments @("-ConfigPath", $configPath, "-StopOnly") `
+            -WorkingDirectory $tempRoot
+        Assert-True ($result.ExitCode -eq 0) "StopOnly should stop a matching Skillz listener."
+        Assert-True ($result.Stdout -match "Stopping existing Skillz process") `
+            "StopOnly should report the matching process it stops."
+        Assert-True ($result.Stdout -match "StopOnly complete") `
+            "StopOnly should print a completion message after stopping a matching listener."
+        $matchingProcess.WaitForExit(5000) | Out-Null
+        Assert-True ($matchingProcess.HasExited) "Matching listener process should exit after StopOnly."
+        $remainingMatching = @(
+            Get-NetTCPConnection `
+                -LocalPort $matchingPort `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+        )
+        Assert-True ($remainingMatching.Count -eq 0) "Matching listener port should be released."
+    }
+    finally {
+        Stop-TestProcess $matchingProcess
+    }
+
+    $freeProbe = New-LoopbackTcpListener
+    $freePort = $freeProbe.Port
+    $freeProbe.Listener.Stop()
+    Write-InterpreterTestConfig `
+        -Path $configPath `
+        -Interpreter "missing-python" `
+        -Port $freePort
+    $result = Invoke-SetupAndRun `
+        -Arguments @("-ConfigPath", $configPath, "-StopOnly") `
+        -WorkingDirectory $tempRoot
+    Assert-True ($result.ExitCode -eq 0) "StopOnly should not require python.interpreter to be usable."
+    Assert-True ($result.Stdout -match "StopOnly complete") "StopOnly should print a completion message."
+    Assert-True ($result.Stderr -notmatch "path not found") "StopOnly should not resolve Python candidates."
+
+    Set-Content `
+        -LiteralPath $configPath `
+        -Encoding UTF8 `
+        -Value (@{
+            skillsRoot = @($script:SkillsRoot)
+            transport = "http"
+            host = "127.0.0.1"
+            port = $freePort
+            path = "/mcp"
+        } | ConvertTo-Json -Depth 20)
+    $result = Invoke-SetupAndRun `
+        -Arguments @("-ConfigPath", $configPath, "-StopOnly") `
+        -WorkingDirectory $tempRoot
+    Assert-True ($result.ExitCode -eq 0) "StopOnly should work when only stop-related config fields are present."
+    Assert-True ($result.Stdout -match "StopOnly complete") `
+        "StopOnly with partial config should print a completion message."
+    Assert-True ($result.Stderr -notmatch "python") "StopOnly with partial config should not require python config."
+
+    $jobFailureProbe = New-LoopbackTcpListener
+    $jobFailurePort = $jobFailureProbe.Port
+    $jobFailureProbe.Listener.Stop()
+    Write-InterpreterTestConfig `
+        -Path $configPath `
+        -Interpreter "silent-python" `
+        -Port $jobFailurePort
+    try {
+        $env:SKILLZ_SETUP_TEST_FORCE_JOB_FAILURE = "1"
+        $result = Invoke-SetupAndRun `
+            -Arguments @("-ConfigPath", $configPath, "-SkipSync") `
+            -WorkingDirectory $tempRoot
+        Assert-True ($result.ExitCode -ne 0) "Job Object failure should fail before launching the server."
+        Assert-True ($result.Stderr -match "Forced Job Object") `
+            "Forced Job Object failure should be readable."
+        Assert-True ($result.Stdout -notmatch "MOCK_SILENT_PYTHON_EXECUTED") `
+            "Job Object failure should not execute the mock server command."
+    }
+    finally {
+        Remove-Item Env:\SKILLZ_SETUP_TEST_FORCE_JOB_FAILURE -ErrorAction SilentlyContinue
+    }
+
+    $exitProbe = New-LoopbackTcpListener
+    $exitPort = $exitProbe.Port
+    $exitProbe.Listener.Stop()
+    Write-InterpreterTestConfig `
+        -Path $configPath `
+        -Interpreter "exit-python" `
+        -Port $exitPort
+    $result = Invoke-SetupAndRun `
+        -Arguments @("-ConfigPath", $configPath, "-SkipSync") `
+        -WorkingDirectory $tempRoot
+    Assert-True ($result.ExitCode -eq 37) "SetupAndRun should return the tracked child process exit code."
+    Assert-True ($result.Stdout -match "EXIT_PYTHON_RUN") `
+        "Tracked process stdout should still reach the caller."
+
+    $parentKillProbe = New-LoopbackTcpListener
+    $parentKillPort = $parentKillProbe.Port
+    $parentKillProbe.Listener.Stop()
+    Write-InterpreterTestConfig `
+        -Path $configPath `
+        -Interpreter "long-python" `
+        -Port $parentKillPort
+    $setupProcess = $null
+    try {
+        $setupProcess = Start-SetupAndRunProcess `
+            -Arguments @("-ConfigPath", $configPath, "-SkipSync") `
+            -WorkingDirectory $tempRoot
+        $listeningConnections = @(Wait-ListeningPort -Port $parentKillPort -TimeoutSeconds 20)
+        Assert-True ($listeningConnections.Count -gt 0) `
+            "Long-running mock server should listen before parent termination."
+
+        Stop-Process -Id $setupProcess.Id -Force -ErrorAction SilentlyContinue
+        $setupProcess.WaitForExit(10000) | Out-Null
+
+        Assert-True (Wait-PortReleased -Port $parentKillPort -TimeoutSeconds 20) `
+            "Killing the SetupAndRun parent process should release the mock server port."
+        $parentKillPattern = [regex]::Escape($tempRoot) + "|" + [regex]::Escape([string]$parentKillPort)
+        Assert-True (Wait-NoProcessCommandLineMatch -Pattern $parentKillPattern -TimeoutSeconds 20) `
+            "Killing the SetupAndRun parent process should not leave matching child processes."
+    }
+    finally {
+        Stop-TestProcess $setupProcess
+        foreach ($connection in @(Get-NetTCPConnection -LocalPort $parentKillPort -State Listen -ErrorAction SilentlyContinue)) {
+            Stop-Process -Id $connection.OwningProcess -Force -ErrorAction SilentlyContinue
+        }
+    }
 
     Write-CandidateTestConfig `
         -Path $configPath `
@@ -748,6 +1208,6 @@ exit /b 0
 finally {
     $env:PATH = $oldPath
     if (Test-Path -LiteralPath $tempRoot) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+        Remove-TestDirectory -Path $tempRoot
     }
 }
