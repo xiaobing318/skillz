@@ -1,10 +1,21 @@
-/tmp/
-/.specstory/
-/.ruff_cache/
-/AGENTS.md
-tmp/
-/.venv/
-/dist/
-/*.egg-info
-/build/
+# OS generated files
+.DS_Store
+
+# Editor / IDE local settings
+.vscode/
+
+# Python bytecode and runtime caches
 __pycache__/
+
+# Python test, lint, type-check, and coverage caches
+/.pytest_cache/
+/.ruff_cache/
+
+# Python virtual environments and local dependency installs
+/.venv/
+
+# uv and local tool caches
+/.uv-cache/
+
+# Skillz runtime state and logs
+/SetupAndRun/logs/
