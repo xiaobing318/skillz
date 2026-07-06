@@ -1,0 +1,133 @@
+# 配置作用：默认项目使用模型的名称。
+# 候选值 ---> gpt-5.5         官方当前推荐的 Codex 首选模型，适合复杂编码、调研与长链路任务。
+# 候选值 ---> gpt-5.4         当账号暂未开放 gpt-5.5 时的推荐回退模型。
+# 候选值 ---> gpt-5.4-mini    更快、更省资源，适合轻量修改、快速问答或子代理任务。
+# 候选值 ---> gpt-5.3-codex   旧一代强编码模型，仅在需要保持旧会话/旧配置一致时使用。
+model = "gpt-5.5"
+
+# 配置作用：模型推理强度，越高通常推理更深但耗时更长。
+# 候选值 ---> minimal     最低推理强度，速度优先。
+# 候选值 ---> low         较低推理强度。
+# 候选值 ---> medium      常规推理强度。
+# 候选值 ---> high        高推理强度。
+# 候选值 ---> xhigh       最高推理强度（是否可用取决于模型）。
+model_reasoning_effort = "xhigh"
+
+# 配置作用：推理摘要输出方式，用于控制界面中展示多少推理过程摘要。
+# 候选值 ---> auto       由 Codex 按模型和界面能力自动选择。
+# 候选值 ---> concise    输出较简短的推理摘要。
+# 候选值 ---> detailed   输出更详细的推理摘要。
+# 候选值 ---> none       不输出推理摘要。
+model_reasoning_summary = "auto"
+
+# 配置作用：自动压缩上下文的 token 阈值，达到该阈值后 Codex 可自动整理会话上下文。
+# 候选值 ---> number     正整数，单位为 token 数量，当前值是 258400 * 0.90 = 232560，未设置时使用模型默认值。
+model_auto_compact_token_limit = 232560
+
+# 配置作用：读取项目说明文档的最大字节数。
+# 候选值 ---> number     正整数，单位为字节，当前值为 131072，足够覆盖项目 AGENTS.md 并保留扩展余量。
+project_doc_max_bytes = 131072
+
+# 配置作用：交互风格偏好，仅对支持 personality 的模型生效。
+# 候选值 ---> none       不强制人格风格。
+# 候选值 ---> friendly   友好协作风格。
+# 候选值 ---> pragmatic  务实直接风格。
+personality = "friendly"
+
+# 配置作用：网络搜索工具模式，用于控制 Codex 是否以及如何访问网页搜索结果。
+# 候选值 ---> disabled   禁用 Codex 使用网页搜索工具。
+# 候选值 ---> cached     使用 OpenAI 维护的搜索缓存，默认更稳健。
+# 候选值 ---> live       实时抓取最新网页结果，适合明确要求“最新/今天/最近”的任务。
+web_search = "live"
+
+# 配置作用：该选项控制 Codex 在要运行命令或触发需要批准的动作时，是否暂停来向你要权限。
+# 候选值 ---> untrusted   只自动运行可信只读命令，其它命令请求批准。
+# 候选值 ---> on-request  由 Codex 在需要越过沙箱、联网或执行高风险动作时请求批准。
+# 候选值 ---> never       从不请求批准，沙箱拒绝时直接失败，适合外部已完全隔离的非交互环境。
+approval_policy = "on-request"
+
+# 配置作用：自动审批复核器，用于控制交互式审批请求由用户还是自动复核器处理。
+# 候选值 ---> user          所有审批请求都交给用户手动确认。
+# 候选值 ---> auto_review   审批请求先交给自动复核器判断风险，高风险仍需要足够授权。
+approvals_reviewer = "auto_review"
+
+# 配置作用：该选项控制命令执行时的文件系统/网络沙箱边界。
+# 候选值 ---> read-only             只能读文件，适合纯分析。
+# 候选值 ---> workspace-write       可写当前工作区，并可通过 writable_roots 放行必要的外部目录。
+# 候选值 ---> danger-full-access    关闭沙箱，风险极高，不建议常态使用。
+sandbox_mode = "danger-full-access"
+
+# 配置作用：在 workspace-write 模式下的附加项，仅在 workspace-write 时生效，额外允许写入的目录列表，当前仓库本身由 workspace 提供写权限，不需要写在这里。
+# 候选值 ---> array<string>         绝对路径数组。
+[sandbox_workspace_write]
+writable_roots = []
+
+# 配置作用：是否允许 sandbox 子进程直接联网。
+# 候选值 ---> true    允许 sandbox 子进程直接联网。
+# 候选值 ---> false   禁止 sandbox 子进程直接联网。
+network_access = true
+
+# 配置作用：是否将 $TMPDIR 从 writable roots 中排除。
+# 候选值 ---> true    不把 $TMPDIR 当作可写目录，隔离更严格。
+# 候选值 ---> false   保留默认临时目录可写，便于脚本测试、测试工具和运行工具写临时文件。
+exclude_tmpdir_env_var = false
+
+# 配置作用：是否将 /tmp 从 writable roots 中排除。
+# 候选值 ---> true    不把 /tmp 当作可写目录，隔离更严格。
+# 候选值 ---> false   保留 /tmp 可写，平台 Windows 原生场景下通常保持默认即可。
+exclude_slash_tmp = false
+
+
+
+
+
+# 配置组：在 Windows 平台上原生 sandbox 配置项。
+[windows]
+# 配置作用：在 Windows 平台上原生 sandbox 模式。
+# 候选值 ---> elevated     官方建议优先使用，隔离更强。
+# 候选值 ---> unelevated   无管理员权限或 elevated setup 失败时的 fallback。
+sandbox = "elevated"
+
+# 配置作用：是否将 sandbox 子进程放入 private desktop 空间。
+# 候选值 ---> true         使用 private desktop，默认隔离更强。
+# 候选值 ---> false        使用旧的 Winsta0\Default 行为，仅在兼容性问题时使用。
+sandbox_private_desktop = true
+
+
+
+
+
+# 配置组：某些功能开关。
+[features]
+# 配置作用：是否启用多代理/子代理能力。
+# 候选值 ---> true         启用，适合大型代码库中的并行读代码、测试和审查。
+# 候选值 ---> false        禁用，所有任务只由主代理处理。
+multi_agent = true
+
+# 配置作用：是否启用 shell 环境快照以加速重复命令。
+# 候选值 ---> true    启用，通常可提升重复命令执行速度。
+# 候选值 ---> false   禁用，如果 Windows 上遇到环境刷新异常，可临时改为 false。
+shell_snapshot = true
+
+# 配置作用：开启后更方便按轮次回滚本地修改，适合 coding agent 的日常使用。
+# 候选值 ---> true         启用，更加方便按照轮次回滚本地修改。
+# 候选值 ---> false        禁用，默认配置。
+undo = true
+
+# 配置作用：是否启用 /Goal 持久目标能力，未启用时 VS Code 扩展会提示 Failed to set goal 信息。
+# 候选值 ---> true         启用 /Goal，可为当前线程设置持续目标。
+# 候选值 ---> false        禁用 /Goal，保持默认实验特性关闭状态。
+goals = true
+
+
+
+
+# 配置组：子代理全局限制，对本项目内所有 subagent 生效。
+[agents]
+# 配置作用：可并行打开的 agent 线程上限。
+# 候选值 ---> number  正整数，默认通常为 6 个子代理，数值越大并行能力越强但资源占用越高。
+max_threads = 20
+
+# 配置作用：子代理嵌套深度上限。
+# 候选值 ---> number  非负整数，默认 1 表示主代理可拉起一层子代理。
+max_depth = 1

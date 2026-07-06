@@ -1,0 +1,17 @@
+prefix_rule(
+  pattern = ["git", "commit"],
+  decision = "forbidden",
+  justification = "禁止自动提交，提交到 GitHub 必须由我自己手动完成。",
+)
+
+prefix_rule(
+  pattern = ["git", "push"],
+  decision = "forbidden",
+  justification = "禁止自动推送，推送到 GitHub 必须由我手动完成。",
+)
+
+prefix_rule(
+  pattern = ["git", "pull"],
+  decision = "forbidden",
+  justification = "禁止自动拉取，从 GitHub 拉取代码必须由我手动完成。",
+)
