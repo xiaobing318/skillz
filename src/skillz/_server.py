@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import logging
 import mimetypes
+import threading
 from pathlib import PurePosixPath
 import re
 import sys
@@ -927,7 +928,7 @@ def register_skill_tool(
 
 
 def _skill_summary(skill: Skill, root: Path) -> Mapping[str, Any]:
-    """Return lightweight startup discovery metadata for a skill."""
+    """Return lightweight current discovery metadata for a skill."""
 
     return {
         "slug": skill.slug,
@@ -942,7 +943,7 @@ def _register_discovery_tools(mcp: FastMCP, registry: SkillRegistry) -> None:
     @mcp.tool(
         name="list_skills",
         description=(
-            "List skills currently available through Skillz using startup "
+            "List skills currently available through Skillz using current "
             "metadata only: "
             "slug, name, and description."
         ),
@@ -1041,15 +1042,80 @@ def build_cors_middleware(
     ]
 
 
-def build_server(registry: SkillRegistry) -> FastMCP:
+def _build_skills_root_fingerprint(root: Path) -> tuple[tuple[Any, ...], ...]:
+    """Return a lightweight fingerprint for hot reload checks."""
+
+    if not root.exists() or not root.is_dir():
+        raise SkillError(
+            f"Skills root {root} does not exist or is not a directory."
+        )
+
+    root = root.resolve()
+    entries: list[tuple[Any, ...]] = []
+    try:
+        root_stat = root.stat()
+    except OSError as exc:
+        raise SkillError(f"Cannot read skills root {root}: {exc}") from exc
+    entries.append((".", "dir", root_stat.st_mtime_ns, root_stat.st_size))
+
+    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            LOGGER.warning("Cannot stat skills path %s: %s", path, exc)
+            continue
+
+        try:
+            relative_path = path.relative_to(root).as_posix()
+        except ValueError:  # pragma: no cover - defensive
+            relative_path = path.name
+
+        if path.is_dir():
+            kind = "dir"
+        elif path.is_file():
+            kind = "file"
+        else:
+            kind = "other"
+
+        entries.append(
+            (
+                relative_path,
+                kind,
+                stat.st_mtime_ns,
+                stat.st_size,
+            )
+        )
+
+    return tuple(entries)
+
+
+def _replace_registry_contents(
+    target: SkillRegistry,
+    source: SkillRegistry,
+) -> None:
+    target._skills_by_slug = dict(source._skills_by_slug)
+    target._skills_by_name = dict(source._skills_by_name)
+
+
+def _validate_runtime_skill_components(registry: SkillRegistry) -> None:
+    scratch = FastMCP(name=SERVER_NAME, version=SERVER_VERSION)
+    for skill in registry.skills:
+        resource_metadata = register_skill_resources(scratch, skill)
+        register_skill_tool(
+            scratch,
+            skill,
+            resources=resource_metadata,
+        )
+
+
+def _build_server_instructions(registry: SkillRegistry) -> str:
     summary = (
         ", ".join(skill.metadata.name for skill in registry.skills)
         or "No skills"
     )
 
-    # Comprehensive server-level instructions for AI agents
     skill_count = len(registry.skills)
-    server_instructions = textwrap.dedent(
+    return textwrap.dedent(
         f"""\
         SKILLZ MCP SERVER - Specialized Instruction Provider
 
@@ -1125,20 +1191,155 @@ def build_server(registry: SkillRegistry) -> FastMCP:
         """
     ).strip()
 
-    mcp = FastMCP(
+
+class SkillzMCP(FastMCP):
+    """FastMCP server that refreshes skills on request boundaries."""
+
+    def __init__(self, registry: SkillRegistry, **kwargs: Any) -> None:
+        super().__init__(
+            on_duplicate_tools="replace",
+            on_duplicate_resources="replace",
+            **kwargs,
+        )
+        self._skillz_registry = registry
+        self._skillz_fingerprint = _build_skills_root_fingerprint(
+            registry.root
+        )
+        self._skillz_failed_fingerprint: Optional[
+            tuple[tuple[Any, ...], ...]
+        ] = None
+        self._skillz_tool_names: set[str] = set()
+        self._skillz_resource_uris: set[str] = set()
+        self._skillz_reload_lock = threading.RLock()
+
+    def sync_skill_components(self) -> None:
+        """Replace registered skill tools and resources from the registry."""
+
+        for tool_name in sorted(self._skillz_tool_names):
+            try:
+                self.remove_tool(tool_name)
+            except Exception:  # pragma: no cover - stale manager state
+                LOGGER.debug("Skill tool already absent: %s", tool_name)
+        self._skillz_tool_names.clear()
+
+        for uri in sorted(self._skillz_resource_uris):
+            self._resource_manager._resources.pop(uri, None)
+        self._skillz_resource_uris.clear()
+
+        for skill in self._skillz_registry.skills:
+            resource_metadata = register_skill_resources(self, skill)
+            register_skill_tool(
+                self,
+                skill,
+                resources=resource_metadata,
+            )
+            self._skillz_tool_names.add(skill.slug)
+            self._skillz_resource_uris.update(
+                resource["uri"] for resource in resource_metadata
+            )
+
+        self.instructions = _build_server_instructions(
+            self._skillz_registry
+        )
+
+    def ensure_skills_current(self) -> None:
+        """Reload skills when the skills root fingerprint changes."""
+
+        try:
+            fingerprint = _build_skills_root_fingerprint(
+                self._skillz_registry.root
+            )
+        except SkillError as exc:
+            fingerprint = (("__reload_error__", str(exc)),)
+            self._record_reload_failure(fingerprint, exc)
+            return
+
+        if fingerprint == self._skillz_fingerprint:
+            return
+        if fingerprint == self._skillz_failed_fingerprint:
+            return
+
+        with self._skillz_reload_lock:
+            if fingerprint == self._skillz_fingerprint:
+                return
+            if fingerprint == self._skillz_failed_fingerprint:
+                return
+
+            candidate = SkillRegistry(self._skillz_registry.root)
+            try:
+                candidate.load()
+                _validate_runtime_skill_components(candidate)
+            except Exception as exc:
+                self._record_reload_failure(fingerprint, exc)
+                return
+
+            _replace_registry_contents(self._skillz_registry, candidate)
+            self.sync_skill_components()
+            self._skillz_fingerprint = fingerprint
+            self._skillz_failed_fingerprint = None
+            LOGGER.info(
+                "Reloaded %d skills from %s",
+                len(self._skillz_registry.skills),
+                self._skillz_registry.root,
+            )
+
+    def _record_reload_failure(
+        self,
+        fingerprint: tuple[tuple[Any, ...], ...],
+        exc: Exception,
+    ) -> None:
+        with self._skillz_reload_lock:
+            if fingerprint == self._skillz_failed_fingerprint:
+                return
+            self._skillz_failed_fingerprint = fingerprint
+            LOGGER.warning(
+                "Skill hot reload skipped; keeping previous snapshot: %s",
+                exc,
+                exc_info=True,
+            )
+
+    async def get_tools(self) -> dict[str, Any]:
+        self.ensure_skills_current()
+        return await super().get_tools()
+
+    async def _list_tools(self) -> list[Any]:
+        self.ensure_skills_current()
+        return await super()._list_tools()
+
+    async def _call_tool(self, key: str, arguments: dict[str, Any]) -> Any:
+        self.ensure_skills_current()
+        return await super()._call_tool(key, arguments)
+
+    async def get_resources(self) -> dict[str, Any]:
+        self.ensure_skills_current()
+        return await super().get_resources()
+
+    async def get_resource(self, key: str) -> Any:
+        self.ensure_skills_current()
+        return await super().get_resource(key)
+
+    async def _list_resources(self) -> list[Any]:
+        self.ensure_skills_current()
+        return await super()._list_resources()
+
+    async def _read_resource(self, uri: Any) -> Any:
+        self.ensure_skills_current()
+        return await super()._read_resource(uri)
+
+    async def _mcp_read_resource(self, uri: Any) -> Any:
+        self.ensure_skills_current()
+        return await super()._mcp_read_resource(uri)
+
+
+def build_server(registry: SkillRegistry) -> FastMCP:
+    mcp = SkillzMCP(
+        registry,
         name=SERVER_NAME,
         version=SERVER_VERSION,
-        instructions=server_instructions,
+        instructions=_build_server_instructions(registry),
     )
     _register_discovery_tools(mcp, registry)
-
-    for skill in registry.skills:
-        resource_metadata = register_skill_resources(mcp, skill)
-        register_skill_tool(
-            mcp,
-            skill,
-            resources=resource_metadata,
-        )
+    mcp.sync_skill_components()
     return mcp
 
 

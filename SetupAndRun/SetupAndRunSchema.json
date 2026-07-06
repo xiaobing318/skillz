@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/intellectronica/skillz/SetupAndRun/SetupAndRunSchema.json",
   "title": "Skillz SetupAndRun 配置文件",
-  "description": "用于校验 SetupAndRun.json 的配置结构，适用于 Windows 上通过 SetupAndRun.ps1 启动 Skillz MCP Server，并在 llama-ui / llama-server 中配置 MCP Server 的场景。本 schema 只描述配置字段、类型、默认值和脚本已有校验规则；实际路径解析、Python 解释器探测、uv 调用、环境同步和服务启动由 SetupAndRun.ps1 执行。",
+  "description": "说明 SetupAndRun.json 可以填写哪些字段，适合在 Windows 上通过 SetupAndRun.ps1 启动 Skillz MCP Server，并把服务接入 llama-ui 或 llama-server 的场景。编辑器会用这里的说明显示提示，脚本仍负责路径解析、Python 探测、uv 调用、环境同步和服务启动。",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,11 +16,11 @@
   "properties": {
     "$schema": {
       "$ref": "#/$defs/nonEmptyString",
-      "description": "本地 schema 文件路径，供编辑器自动提示和 SetupAndRun.ps1 配置校验使用。通常保持 ./SetupAndRunSchema.json 即可。"
+      "description": "指定本配置文件使用的 JSON Schema 校验路径。这个字段用于让编辑器显示字段提示，也用于脚本在可用时做 JSON 校验。通常填写 ./SetupAndRunSchema.json，如果改成其它路径，编辑器会按新路径寻找 JSON Schema 校验文件路径。"
     },
     "skillsRoot": {
       "$ref": "#/$defs/pathCandidateList",
-      "description": "Agent Skills 根目录候选列表。脚本会按数组顺序选择第一个存在的目录，并把最终选中的单个目录作为 Skillz MCP Server 的 skills_root 参数传入；不会合并多个目录。相对路径按 SetupAndRun.json 所在目录解析。",
+      "description": "填写 Agent Skills 根目录候选列表。这个字段适合同一份配置在不同磁盘或不同电脑上自动选择可用目录。可以填写绝对路径，也可以填写相对路径，相对路径按 SetupAndRun.json 所在目录解析。脚本会按数组顺序选择第一个存在的目录，只加载这个目录，不会合并多个目录。",
       "examples": [
         [
           "C:/Softwares/codex/skills",
@@ -36,12 +36,12 @@
         "sse"
       ],
       "default": "http",
-      "description": "Skillz MCP Server 的传输方式。llama-ui 浏览器接入通常使用 http；stdio 适合命令行 MCP 客户端；sse 用于需要旧式 SSE MCP transport 的客户端。"
+      "description": "选择 Skillz MCP Server 的传输方式。http 适合 llama-ui 这类浏览器客户端，stdio 适合由命令行 MCP 客户端直接拉起服务，sse 适合仍使用 SSE transport 的旧客户端。不同值会改变启动参数和 endpoint 形式。"
     },
     "host": {
       "$ref": "#/$defs/nonEmptyString",
       "default": "127.0.0.1",
-      "description": "HTTP/SSE 服务监听地址。第二台电脑通过 llama-server proxy 访问 A 电脑本机 Skillz 时，通常仍填写 127.0.0.1，因为 proxy 会从 llama-server 所在机器发起请求。",
+      "description": "设置 HTTP 或 SSE 服务监听地址。地址 127.0.0.1 只允许本机访问，适合本机 llama-ui/llama-server 服务。地址 0.0.0.0 会监听所有网卡，只有明确需要局域网访问并确认防火墙规则时再使用。",
       "examples": [
         "127.0.0.1",
         "0.0.0.0"
@@ -52,17 +52,17 @@
       "minimum": 1,
       "maximum": 65535,
       "default": 8000,
-      "description": "HTTP/SSE 服务监听端口。llama-ui 中的 MCP Server URL 需要与该端口一致，例如 http://127.0.0.1:8000/mcp。"
+      "description": "设置 HTTP 或 SSE 服务监听端口。可以填写 1 到 65535 之间的整数。在 llama-ui 中的 MCP Server URL 中的地址必须和这里的地址一致，例如 http://127.0.0.1:8000/mcp 网址。"
     },
     "path": {
       "$ref": "#/$defs/nonEmptyString",
       "default": "/mcp",
-      "description": "HTTP transport 的 MCP endpoint 路径。transport 为 http 时必须以 / 开头，常用值为 /mcp；transport 为 stdio 或 sse 时该字段仍按脚本配置结构保留。"
+      "description": "设置 HTTP transport 的 MCP endpoint 路径。其中 transport 为 http 时必须以 / 开头，常用值是 /mcp 路径。而 transport 为 stdio 或 sse 时脚本仍保留这个字段，但不会把它作为 HTTP path 使用。"
     },
     "corsOrigins": {
       "$ref": "#/$defs/originList",
       "default": [],
-      "description": "允许浏览器直连 Skillz MCP Server 的 llama-ui origin 列表。浏览器直连时应填写地址栏中的 origin，例如 http://127.0.0.1:8282；启用 llama-server proxy 时，请求由 llama-server 转发，通常不依赖浏览器直连 CORS。",
+      "description": "填写允许浏览器直连 Skillz MCP Server 的 llama-ui origin 列表。浏览器直连时填写地址栏里的 origin 值，例如 http://127.0.0.1:8282 网址。启用 llama-server proxy 时，请求由 llama-server 转发，通常不依赖浏览器直连跨域访问。",
       "examples": [
         [
           "http://127.0.0.1:8282"
@@ -76,20 +76,20 @@
     "corsAllowCredentials": {
       "type": "boolean",
       "default": false,
-      "description": "是否允许浏览器携带 credentials 访问 Skillz MCP Server。设为 true 时，corsOrigins 不能包含通配符 *，这是 SetupAndRun.ps1 已有校验规则。"
+      "description": "控制浏览器请求能否携带 credentials 访问 Skillz MCP Server 服务。false 适合普通本机使用，true 适合确实需要 cookie 或认证头的场景，这时 corsOrigins 不能包含 * 通配符，脚本会拒绝这种组合。"
     },
     "corsAllowPrivateNetwork": {
       "type": "boolean",
       "default": false,
-      "description": "是否响应 Chrome Private Network Access 预检。只有浏览器从 HTTPS llama-ui 直接访问本机或局域网 HTTP Skillz 服务时才需要；设为 true 时必须配置至少一个明确 corsOrigins，且不能使用通配符 *。"
+      "description": "控制是否响应 Chrome Private Network Access 预检。false 适合普通本机 HTTP 页面。true 适合 HTTPS llama-ui 直接访问本机或局域网 HTTP Skillz 服务，这时必须配置至少一个明确 corsOrigins，并且不能使用 * 通配符。"
     },
     "python": {
       "$ref": "#/$defs/pythonConfig",
-      "description": "Python 和 uv 配置。SetupAndRun.ps1 只会通过 python.interpreter 候选列表选中的解释器执行 python -m uv，不会从 PATH 查找 uv。"
+      "description": "配置启动脚本使用的 Python 和 uv 行为。脚本只会通过 python.interpreter 候选列表选中的解释器执行 python -m uv 命令，不会从 PATH 查找 uv 包。这个对象适合固定 QGIS Python 解释器、独立 Python 解释器或其它项目专用 Python 解释器。"
     },
     "logging": {
       "$ref": "#/$defs/loggingConfig",
-      "description": "Skillz 运行日志配置。未配置 logging 时，脚本按默认值运行；启用 log 后可通过 logPath 指定日志文件。"
+      "description": "配置 Skillz 运行日志。字段 enableLog 控制是否写日志文件，字段 logDir 控制日志文件保存目录。关闭日志时只保留控制台输出，开启日志时每次运行都会生成一个按时间命名的详细日志文件。"
     }
   },
   "allOf": [
@@ -196,7 +196,7 @@
       "properties": {
         "interpreter": {
           "$ref": "#/$defs/pathCandidateList",
-          "description": "Python 解释器候选列表。每个候选可以是 Python 解释器路径，或包含 python.exe、python.cmd、python.bat 的目录。脚本会按数组顺序选择第一个可解析且能运行 python -m uv 的候选；相对路径按 SetupAndRun.json 所在目录解析。",
+          "description": "填写 Python 解释器候选列表。每个候选可以是 python.exe、python.cmd、python.bat 的完整路径，也可以是包含这些文件的目录。可以填写绝对路径，也可以填写相对路径，相对路径按 SetupAndRun.json 所在目录解析。脚本会按顺序选择第一个可解析并且能运行 python -m uv 的候选。",
           "examples": [
             [
               "E:/QGISPackages/QGIS34407-Release/apps/Python312",
@@ -207,33 +207,32 @@
         "uvSync": {
           "type": "boolean",
           "default": true,
-          "description": "启动前是否执行 uv sync。true 表示在仓库根目录同步 Python 环境；命令行 -SkipSync 可临时跳过。"
+          "description": "控制启动前是否执行 uv sync。true 会在仓库根目录同步 Python 环境，适合正常首次运行或依赖变化后运行。false 会跳过同步，适合已经确认环境可用并希望更快启动的临时场景。"
         },
         "frozen": {
           "type": "boolean",
           "default": true,
-          "description": "是否向 uv sync / uv run 追加 --frozen。true 表示严格使用锁定依赖，适合可复现运行；false 允许 uv 按当前配置解析依赖。"
+          "description": "控制是否向 uv sync 和 uv run 追加 --frozen。true 会严格使用锁定依赖，适合可复现运行。false 允许 uv 按当前项目配置重新解析依赖，适合正在调整依赖的开发场景。"
         }
       }
     },
     "loggingConfig": {
       "type": "object",
       "additionalProperties": false,
+      "required": [
+        "enableLog",
+        "logDir"
+      ],
       "properties": {
-        "verbose": {
+        "enableLog": {
           "type": "boolean",
           "default": false,
-          "description": "是否向 Skillz 传入 --verbose，输出更详细的调试日志。"
+          "description": "控制是否写入 Skillz 日志文件。false 不传入 --log，只在控制台显示运行信息。true 会传入 --log，并把详细日志写到 logDir 下按时间命名的文件中。"
         },
-        "log": {
-          "type": "boolean",
-          "default": false,
-          "description": "是否向 Skillz 传入 --log，将详细日志写入文件。"
-        },
-        "logPath": {
+        "logDir": {
           "$ref": "#/$defs/nonEmptyString",
-          "default": ".skillz/skillz.log",
-          "description": "启用 logging.log 后使用的日志文件路径。未填写时脚本默认使用仓库根目录下的 .skillz/skillz.log。"
+          "default": "./logs",
+          "description": "指定日志文件保存目录。可以填写绝对路径，也可以填写相对路径，相对路径按 SetupAndRun.json 所在目录解析。enableLog 为 true 时，脚本会在这个目录下使用 YYYY-MM-DD-HH-MM-SS.log 作为本次运行的日志文件名。"
         }
       }
     }
@@ -263,9 +262,8 @@
         "frozen": true
       },
       "logging": {
-        "verbose": false,
-        "log": false,
-        "logPath": ".skillz/skillz.log"
+        "enableLog": false,
+        "logDir": "./logs"
       }
     }
   ]

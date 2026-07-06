@@ -1,17 +1,119 @@
-[CmdletBinding()]
-param(
-    [string]$ConfigPath,
-    [switch]$ConfigureOnly,
-    [switch]$SkipSync,
-    [switch]$NoLaunch,
-    [switch]$StopExisting,
-    [switch]$StopOnly,
-    [switch]$PrintCommand,
-    [switch]$Help
-)
-
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$script:OriginalArguments = @($args)
+$script:SetupBoundParameters = @{}
+$ConfigPath = $null
+$ConfigureOnly = $false
+$NoLaunch = $false
+$PrintCommand = $false
+$Help = $false
+
+function Fail-Parameter {
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    throw $Message
+}
+
+function Test-SetupArgumentLooksLikeOption {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    return ([string]$Value).StartsWith("-")
+}
+
+function Set-SetupParsedParameter {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][object]$Value,
+        [Parameter(Mandatory = $true)][string]$ParameterName
+    )
+
+    if ($script:SetupBoundParameters.ContainsKey($Name)) {
+        Fail-Parameter "Parameter $ParameterName was specified more than once."
+    }
+
+    $script:SetupBoundParameters[$Name] = $Value
+    Set-Variable -Name $Name -Value $Value -Scope Script
+}
+
+function Read-SetupRequiredArgumentValue {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Arguments,
+        [Parameter(Mandatory = $true)][int]$Index,
+        [Parameter(Mandatory = $true)][string]$ParameterName
+    )
+
+    $valueIndex = $Index + 1
+    if ($valueIndex -ge $Arguments.Count) {
+        Fail-Parameter "Missing value for parameter $ParameterName."
+    }
+
+    $value = [string]$Arguments[$valueIndex]
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        Fail-Parameter "Missing value for parameter $ParameterName."
+    }
+    if (Test-SetupArgumentLooksLikeOption -Value $value) {
+        Fail-Parameter "Missing value for parameter $ParameterName."
+    }
+
+    return $value
+}
+
+function Initialize-SetupCommandLine {
+    param([AllowEmptyCollection()][object[]]$Arguments)
+
+    $script:SetupBoundParameters.Clear()
+    $index = 0
+    while ($index -lt $Arguments.Count) {
+        $argument = [string]$Arguments[$index]
+        if ([string]::IsNullOrWhiteSpace($argument)) {
+            $index++
+            continue
+        }
+        if (-not (Test-SetupArgumentLooksLikeOption -Value $argument)) {
+            Fail-Parameter "Unexpected positional argument: $argument"
+        }
+
+        switch -CaseSensitive ($argument) {
+            "--Help" {
+                Set-SetupParsedParameter -Name "Help" -Value $true -ParameterName $argument
+                $index++
+                continue
+            }
+            "--ConfigPath" {
+                $value = Read-SetupRequiredArgumentValue `
+                    -Arguments $Arguments `
+                    -Index $index `
+                    -ParameterName $argument
+                Set-SetupParsedParameter -Name "ConfigPath" -Value $value -ParameterName $argument
+                $index += 2
+                continue
+            }
+            "--ConfigureOnly" {
+                Set-SetupParsedParameter -Name "ConfigureOnly" -Value $true -ParameterName $argument
+                $index++
+                continue
+            }
+            "--NoLaunch" {
+                Set-SetupParsedParameter -Name "NoLaunch" -Value $true -ParameterName $argument
+                $index++
+                continue
+            }
+            "--PrintCommand" {
+                Set-SetupParsedParameter -Name "PrintCommand" -Value $true -ParameterName $argument
+                $index++
+                continue
+            }
+            default {
+                Fail-Parameter "Unknown parameter: $argument"
+            }
+        }
+    }
+}
 
 function Show-Help {
     @"
@@ -20,17 +122,14 @@ SetupAndRun.ps1
 Configure the local Python environment and start the Skillz MCP server.
 
 Usage:
-  powershell -ExecutionPolicy Bypass -File SetupAndRun\SetupAndRun.ps1 [-ConfigPath <path>] [-ConfigureOnly] [-SkipSync] [-NoLaunch] [-StopExisting] [-StopOnly] [-PrintCommand]
+  powershell -ExecutionPolicy Bypass -File SetupAndRun\SetupAndRun.ps1 [--ConfigPath <path>] [--ConfigureOnly] [--NoLaunch] [--PrintCommand]
 
 Options:
-  -ConfigPath <path>  JSON configuration file. Defaults to SetupAndRun\SetupAndRun.json.
-  -ConfigureOnly      Run the environment setup phase and then stop.
-  -SkipSync           Skip 'uv sync'. Useful when the virtual environment is already ready.
-  -NoLaunch           Build and print the Skillz command without starting it.
-  -StopExisting       Stop an existing Skillz process on the configured port before launching.
-  -StopOnly           Stop a matching existing Skillz process and exit without launching.
-  -PrintCommand       Print resolved diagnostic commands.
-  -Help               Show this help text.
+  --ConfigPath <path>  JSON configuration file. Defaults to SetupAndRun\SetupAndRun.json.
+  --ConfigureOnly      Run the environment setup phase and then stop.
+  --NoLaunch           Build and print the Skillz command without starting it.
+  --PrintCommand       Print resolved diagnostic commands.
+  --Help               Show this help text.
 
 Configuration:
   skillsRoot and python.interpreter must be arrays of candidate paths. The
@@ -38,7 +137,9 @@ Configuration:
   candidates may point to a Python executable, or to a directory containing
   python.exe, python.cmd, or python.bat. Relative paths are resolved from the
   JSON config file directory. uv is always run through the selected interpreter
-  with 'python -m uv'; PATH uv is not used.
+  with 'python -m uv'; PATH uv is not used. python.uvSync controls whether the
+  script runs 'uv sync'. Before launching HTTP/SSE, a matching stale Skillz
+  listener on the configured skillsRoot and port is stopped automatically.
 "@
 }
 
@@ -489,6 +590,20 @@ function Resolve-ExistingDirectoryCandidate {
     )
 }
 
+function New-LogFilePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$LogDirectory,
+        [Parameter(Mandatory = $true)][string]$BaseDirectory
+    )
+
+    $resolvedDirectory = Resolve-ConfigPathValue `
+        -Value $LogDirectory `
+        -BaseDirectory $BaseDirectory
+    $fileName = (Get-Date -Format "yyyy-MM-dd-HH-mm-ss") + ".log"
+
+    return (Join-Path $resolvedDirectory $fileName)
+}
+
 function Test-PythonUv {
     param([Parameter(Mandatory = $true)][string]$PythonPath)
 
@@ -693,19 +808,8 @@ function Assert-PortAvailableForLaunch {
         return
     }
 
-    if ($StopExisting) {
-        Stop-ExistingSkillzListeners -Port $Port -SkillsRoot $SkillsRoot
-        return
-    }
-
-    $summary = ($listeners | ForEach-Object {
-            Format-ProcessSummary $_
-        }) -join "; "
-    throw (
-        "Port $Port is already in use. Listener: $summary. " +
-        "Close the existing server, choose another port, or rerun with -StopExisting " +
-        "to stop a matching Skillz listener first."
-    )
+    $null = $listeners
+    Stop-ExistingSkillzListeners -Port $Port -SkillsRoot $SkillsRoot
 }
 
 function Get-Win32ErrorMessage {
@@ -1187,37 +1291,6 @@ function Read-JsonConfig {
     return $configJson | ConvertFrom-Json
 }
 
-function Test-SkillzStopOnlyConfig {
-    param([Parameter(Mandatory = $true)][object]$Config)
-
-    Assert-KnownProperties $Config @(
-        '$schema',
-        'skillsRoot',
-        'transport',
-        'host',
-        'port',
-        'path',
-        'corsOrigins',
-        'corsAllowCredentials',
-        'corsAllowPrivateNetwork',
-        'python',
-        'logging'
-    ) "config"
-
-    $transport = Get-ConfigString $Config "transport" $true "transport"
-    if ($transport -notin @("stdio", "http", "sse")) {
-        throw "Config field 'transport' must be one of: stdio, http, sse."
-    }
-
-    if ($transport -in @("http", "sse")) {
-        $null = @(Get-ConfigStringArray $Config "skillsRoot" "skillsRoot" $true)
-        $port = Get-ConfigInteger $Config "port" $true "port"
-        if ($port -lt 1 -or $port -gt 65535) {
-            throw "Config field 'port' must be between 1 and 65535."
-        }
-    }
-}
-
 function Test-SkillzConfig {
     param([Parameter(Mandatory = $true)][object]$Config)
 
@@ -1277,18 +1350,22 @@ function Test-SkillzConfig {
 
     $loggingConfig = Get-ConfigObject $Config "logging" "logging"
     if ($null -ne $loggingConfig) {
-        Assert-KnownProperties $loggingConfig @("verbose", "log", "logPath") "config.logging"
-        $null = Get-ConfigBoolean $loggingConfig "verbose" $false "logging.verbose"
-        $null = Get-ConfigBoolean $loggingConfig "log" $false "logging.log"
-        $logPath = Get-ConfigProperty $loggingConfig "logPath"
-        if ($null -ne $logPath -and ($logPath -isnot [string] -or [string]::IsNullOrWhiteSpace($logPath))) {
-            throw "Config field 'logging.logPath' must be a non-empty string."
+        Assert-KnownProperties $loggingConfig @("enableLog", "logDir") "config.logging"
+        if ($null -eq (Get-ConfigProperty $loggingConfig "enableLog")) {
+            throw "Config field 'logging.enableLog' is required."
         }
+        if ($null -eq (Get-ConfigProperty $loggingConfig "logDir")) {
+            throw "Config field 'logging.logDir' is required."
+        }
+        $null = Get-ConfigBoolean $loggingConfig "enableLog" $false "logging.enableLog"
+        $null = Get-ConfigString $loggingConfig "logDir" $true "logging.logDir"
     }
 
     $null = $skillsRoot
     $null = $hostName
 }
+
+Initialize-SetupCommandLine -Arguments $script:OriginalArguments
 
 if ($Help) {
     Show-Help
@@ -1311,34 +1388,10 @@ $configDirectory = Split-Path -Parent $ConfigPath
 $schemaPath = Join-Path $scriptDir "SetupAndRunSchema.json"
 $config = Read-JsonConfig `
     -Path $ConfigPath `
-    -SchemaPath $schemaPath `
-    -SkipSchemaValidation:$StopOnly
-if ($StopOnly) {
-    Test-SkillzStopOnlyConfig $config
-}
-else {
-    Test-SkillzConfig $config
-}
+    -SchemaPath $schemaPath
+Test-SkillzConfig $config
 
 $transport = [string]$config.transport
-
-if ($StopOnly) {
-    if ($transport -in @("http", "sse")) {
-        $skillsRootCandidates = @(Get-ConfigStringArray $config "skillsRoot" "skillsRoot" $true)
-        $skillsRoot = Resolve-ExistingDirectoryCandidate `
-            -Candidates $skillsRootCandidates `
-            -BaseDirectory $configDirectory `
-            -DisplayName "skillsRoot"
-        Stop-ExistingSkillzListeners `
-            -Port ([int]$config.port) `
-            -SkillsRoot $skillsRoot
-        Write-Host "StopOnly complete for port $($config.port)."
-    }
-    else {
-        Write-Host "StopOnly skipped because transport '$transport' does not listen on a TCP port."
-    }
-    exit 0
-}
 
 $skillsRootCandidates = @(Get-ConfigStringArray $config "skillsRoot" "skillsRoot" $true)
 $skillsRoot = Resolve-ExistingDirectoryCandidate `
@@ -1364,7 +1417,7 @@ $pythonInterpreter = Resolve-FirstPythonInterpreter `
 $uvCommand = $pythonInterpreter
 $uvPrefixArgs = @("-m", "uv")
 
-if ($uvSync -and -not $SkipSync) {
+if ($uvSync) {
     $syncArgs = @($uvPrefixArgs)
     $syncArgs += "sync"
     if ($null -ne $pythonInterpreter) {
@@ -1439,17 +1492,16 @@ if ($transport -in @("http", "sse")) {
     }
 }
 
-if (Get-ConfigBoolean $loggingConfig "verbose" $false "logging.verbose") {
-    $runArgs += "--verbose"
-}
-if (Get-ConfigBoolean $loggingConfig "log" $false "logging.log") {
+if (Get-ConfigBoolean $loggingConfig "enableLog" $false "logging.enableLog") {
     $runArgs += "--log"
-    $logPath = Get-ConfigProperty $loggingConfig "logPath"
-    if ($null -eq $logPath) {
-        $logPath = Join-Path $repoRoot ".skillz\skillz.log"
+    $logDir = Get-ConfigString $loggingConfig "logDir" $false "logging.logDir"
+    if ($null -eq $logDir) {
+        $logDir = "./logs"
     }
     $runArgs += "--log-file"
-    $runArgs += [string]$logPath
+    $runArgs += [string](New-LogFilePath `
+            -LogDirectory $logDir `
+            -BaseDirectory $configDirectory)
 }
 
 $commandLine = Format-CommandLine $uvCommand $runArgs

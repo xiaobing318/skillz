@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 Set-StrictMode -Version Latest
@@ -137,6 +137,26 @@ function Assert-Description {
         "Schema node '$pathText' should have a non-empty description."
     Assert-True ($description -match '[\u4e00-\u9fff]') `
         "Schema node '$pathText' description should include Chinese text."
+    Assert-True ($description -notmatch '[；;]') `
+        "Schema node '$pathText' description should not contain semicolons."
+}
+
+function Assert-DescriptionContains {
+    param(
+        [Parameter(Mandatory = $true)][object]$Schema,
+        [Parameter(Mandatory = $true)][string[]]$Path,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedText
+    )
+
+    $node = Get-SchemaNode -Schema $Schema -Path $Path
+    $pathText = $Path -join "."
+    Assert-True ($null -ne $node) "Schema node '$pathText' should exist."
+
+    $description = Get-JsonMember -InputObject $node -Name "description"
+    foreach ($text in $ExpectedText) {
+        Assert-True ($description -match [regex]::Escape($text)) `
+            "Schema node '$pathText' description should mention '$text'."
+    }
 }
 
 function Assert-DefaultOrExamples {
@@ -265,9 +285,8 @@ function Assert-SchemaMetadata {
         @("`$defs", "pythonConfig", "properties", "interpreter"),
         @("`$defs", "pythonConfig", "properties", "uvSync"),
         @("`$defs", "pythonConfig", "properties", "frozen"),
-        @("`$defs", "loggingConfig", "properties", "verbose"),
-        @("`$defs", "loggingConfig", "properties", "log"),
-        @("`$defs", "loggingConfig", "properties", "logPath")
+        @("`$defs", "loggingConfig", "properties", "enableLog"),
+        @("`$defs", "loggingConfig", "properties", "logDir")
     )
     foreach ($path in $descriptionPaths) {
         Assert-Description -Schema $schema -Path $path
@@ -285,13 +304,29 @@ function Assert-SchemaMetadata {
         @("`$defs", "pythonConfig", "properties", "interpreter"),
         @("`$defs", "pythonConfig", "properties", "uvSync"),
         @("`$defs", "pythonConfig", "properties", "frozen"),
-        @("`$defs", "loggingConfig", "properties", "verbose"),
-        @("`$defs", "loggingConfig", "properties", "log"),
-        @("`$defs", "loggingConfig", "properties", "logPath")
+        @("`$defs", "loggingConfig", "properties", "enableLog"),
+        @("`$defs", "loggingConfig", "properties", "logDir")
     )
     foreach ($path in $hintPaths) {
         Assert-DefaultOrExamples -Schema $schema -Path $path
     }
+
+    Assert-DescriptionContains `
+        -Schema $schema `
+        -Path @("properties", "transport") `
+        -ExpectedText @("http", "stdio", "sse")
+    Assert-DescriptionContains `
+        -Schema $schema `
+        -Path @("`$defs", "pythonConfig", "properties", "interpreter") `
+        -ExpectedText @("绝对路径", "相对路径", "按顺序")
+    Assert-DescriptionContains `
+        -Schema $schema `
+        -Path @("`$defs", "loggingConfig", "properties", "enableLog") `
+        -ExpectedText @("false", "true", "--log")
+    Assert-DescriptionContains `
+        -Schema $schema `
+        -Path @("`$defs", "loggingConfig", "properties", "logDir") `
+        -ExpectedText @("绝对路径", "相对路径", "YYYY-MM-DD-HH-MM-SS.log")
 
     Assert-SchemaPathRules -Schema $schema
 
@@ -377,6 +412,41 @@ function Assert-SchemaMetadata {
     }
     Assert-TestJsonValidation -Json $privateNetworkWildcard -SchemaJson $schemaJson -ExpectedValid $false `
         -Message "Schema should reject corsAllowPrivateNetwork=true with wildcard corsOrigins."
+
+    $validLogging = New-MinimalSchemaConfigJson -Override @{
+        logging = [ordered]@{
+            enableLog = $false
+            logDir = "./logs"
+        }
+    }
+    Assert-TestJsonValidation -Json $validLogging -SchemaJson $schemaJson -ExpectedValid $true `
+        -Message "Schema should accept the enableLog/logDir logging shape."
+
+    $oldLogging = New-MinimalSchemaConfigJson -Override @{
+        logging = [ordered]@{
+            verbose = $false
+            log = $false
+            logPath = "logs/old.log"
+        }
+    }
+    Assert-TestJsonValidation -Json $oldLogging -SchemaJson $schemaJson -ExpectedValid $false `
+        -Message "Schema should reject old logging fields."
+
+    $loggingMissingLogDir = New-MinimalSchemaConfigJson -Override @{
+        logging = [ordered]@{
+            enableLog = $false
+        }
+    }
+    Assert-TestJsonValidation -Json $loggingMissingLogDir -SchemaJson $schemaJson -ExpectedValid $false `
+        -Message "Schema should require logging.logDir when logging is present."
+
+    $loggingMissingEnableLog = New-MinimalSchemaConfigJson -Override @{
+        logging = [ordered]@{
+            logDir = "./logs"
+        }
+    }
+    Assert-TestJsonValidation -Json $loggingMissingEnableLog -SchemaJson $schemaJson -ExpectedValid $false `
+        -Message "Schema should require logging.enableLog when logging is present."
 }
 
 function Write-TestConfig {
@@ -402,8 +472,8 @@ function Write-TestConfig {
     "frozen": true
   },
   "logging": {
-    "verbose": false,
-    "log": false
+    "enableLog": false,
+    "logDir": "./logs"
   }$ExtraJson
 }
 "@
@@ -414,7 +484,8 @@ function Write-InterpreterTestConfig {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Interpreter,
-        [int]$Port = 8765
+        [int]$Port = 8765,
+        [bool]$UvSync = $false
     )
 
     $json = @"
@@ -433,16 +504,49 @@ function Write-InterpreterTestConfig {
     "interpreter": [
       "$(($Interpreter -replace '\\', '/') -replace '"', '\"')"
     ],
-    "uvSync": true,
+    "uvSync": $($UvSync.ToString().ToLowerInvariant()),
     "frozen": true
   },
   "logging": {
-    "verbose": false,
-    "log": false
+    "enableLog": false,
+    "logDir": "./logs"
   }
 }
 "@
     Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
+}
+
+function Write-LoggingTestConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Interpreter,
+        [Parameter(Mandatory = $true)][bool]$EnableLog,
+        [Parameter(Mandatory = $true)][string]$LogDir,
+        [int]$Port = 8765,
+        [bool]$UvSync = $false
+    )
+
+    $config = [ordered]@{
+        skillsRoot = @($script:SkillsRoot)
+        transport = "http"
+        host = "127.0.0.1"
+        port = $Port
+        path = "/mcp"
+        corsOrigins = @("http://127.0.0.1:8282")
+        corsAllowCredentials = $false
+        corsAllowPrivateNetwork = $true
+        python = [ordered]@{
+            interpreter = @($Interpreter)
+            uvSync = $UvSync
+            frozen = $true
+        }
+        logging = [ordered]@{
+            enableLog = $EnableLog
+            logDir = $LogDir
+        }
+    }
+
+    $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
 function New-LoopbackTcpListener {
@@ -607,7 +711,8 @@ function Write-CandidateTestConfig {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string[]]$SkillsRoots,
-        [Parameter(Mandatory = $true)][string[]]$Interpreters
+        [Parameter(Mandatory = $true)][string[]]$Interpreters,
+        [bool]$UvSync = $false
     )
 
     $config = [ordered]@{
@@ -621,12 +726,12 @@ function Write-CandidateTestConfig {
         corsAllowPrivateNetwork = $true
         python = [ordered]@{
             interpreter = $Interpreters
-            uvSync = $true
+            uvSync = $UvSync
             frozen = $true
         }
         logging = [ordered]@{
-            verbose = $false
-            log = $false
+            enableLog = $false
+            logDir = "./logs"
         }
     }
 
@@ -644,8 +749,10 @@ $emptyPythonDir = Join-Path $tempRoot "empty-python"
 $badPythonDir = Join-Path $tempRoot "bad-python"
 $exitPythonDir = Join-Path $tempRoot "exit-python"
 $longPythonDir = Join-Path $tempRoot "long-python"
+$loggingPythonDir = Join-Path $tempRoot "logging-python"
 $script:SkillsRoot = Join-Path $tempRoot "skills"
 $otherSkillsRoot = Join-Path $tempRoot "other-skills"
+$outsideWorkingDir = Join-Path $tempRoot "outside-working-dir"
 $configPath = Join-Path $tempRoot "SetupAndRun.test.json"
 $oldPath = $env:PATH
 
@@ -659,8 +766,10 @@ try {
         $badPythonDir, `
         $exitPythonDir, `
         $longPythonDir, `
+        $loggingPythonDir, `
         $script:SkillsRoot, `
-        $otherSkillsRoot `
+        $otherSkillsRoot, `
+        $outsideWorkingDir `
         | Out-Null
 
     $mockUv = Join-Path $mockBin "uv.cmd"
@@ -758,78 +867,152 @@ finally {
 }
 '@
 
+    $loggingPython = Join-Path $loggingPythonDir "python.cmd"
+    $loggingPythonScript = Join-Path $loggingPythonDir "python.ps1"
+    Set-Content -LiteralPath $loggingPython -Encoding ASCII -Value @"
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0python.ps1" %*
+exit /b %ERRORLEVEL%
+"@
+    Set-Content -LiteralPath $loggingPythonScript -Encoding UTF8 -Value @'
+if ($args.Count -ge 3 -and $args[0] -eq "-m" -and $args[1] -eq "uv" -and $args[2] -eq "--version") {
+    Write-Output "LOGGING_PYTHON_UV_VERSION"
+    exit 0
+}
+
+$logIndex = [Array]::IndexOf($args, "--log-file")
+if ($logIndex -ge 0) {
+    if ($logIndex + 1 -ge $args.Count) {
+        Write-Error "Missing --log-file value."
+        exit 2
+    }
+    $logPath = [string]$args[$logIndex + 1]
+    $logDirectory = Split-Path -Parent $logPath
+    if (-not [string]::IsNullOrWhiteSpace($logDirectory)) {
+        New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+    }
+    Set-Content -LiteralPath $logPath -Encoding UTF8 -Value "MOCK DETAIL LOG"
+}
+
+Write-Output "MOCK_LOGGING_PYTHON_EXECUTED"
+exit 0
+'@
+
     $env:PATH = "$mockBin;$oldPath"
 
-    $result = Invoke-SetupAndRun -Arguments @("-Help") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--Help") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "Help should exit 0."
     Assert-True ($result.Stdout -match "SetupAndRun.ps1") "Help output should name script."
     Assert-True ($result.Stdout -match "Print resolved diagnostic commands") `
         "Help should describe PrintCommand as diagnostic command output."
-    Assert-True ($result.Stdout -match "StopExisting") `
-        "Help should describe the safe stale Skillz listener cleanup option."
+    Assert-True ($result.Stdout -match "stale Skillz") `
+        "Help should describe automatic stale Skillz listener cleanup."
+    Assert-True ($result.Stdout -notmatch "SkipSync|StopExisting|StopOnly") `
+        "Help should not describe removed parameters."
 
-    $result = Invoke-SetupAndRun -Arguments @("-NoSuchParameter") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--NoSuchParameter") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Unknown parameter should fail."
 
+    foreach ($removedParameter in @("-Help", "-SkipSync", "--SkipSync", "-StopExisting", "--StopExisting", "-StopOnly", "--StopOnly")) {
+        $result = Invoke-SetupAndRun -Arguments @($removedParameter) -WorkingDirectory $tempRoot
+        Assert-True ($result.ExitCode -ne 0) "Removed or single-dash parameter $removedParameter should fail."
+        Assert-True ($result.Stderr -match "Unknown parameter") `
+            "Removed or single-dash parameter $removedParameter should report an unknown parameter."
+    }
+
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath") -WorkingDirectory $tempRoot
+    Assert-True ($result.ExitCode -ne 0) "Missing --ConfigPath value should fail."
+    Assert-True ($result.Stderr -match "Missing value") "Missing value error should be readable."
+
     $missingConfig = Join-Path $tempRoot "missing.json"
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $missingConfig, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $missingConfig, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Missing config should fail."
     Assert-True ($result.Stderr -match "Config file not found") "Missing config error should be readable."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp"}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch", "-PrintCommand") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch", "--PrintCommand") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Missing python config should fail even when uv is on PATH."
     Assert-True ($result.Stderr -match "python") "Missing python config error should be readable."
     Assert-True ($result.Stdout -notmatch "MOCK_UV") "PATH uv should not be used when python config is missing."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":"x","transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":["mock-python"]}}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Single-string skillsRoot should fail."
     Assert-True ($result.Stderr -match "(schema|array)") "Single-string skillsRoot error should be readable."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":"mock-python"}}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Single-string python.interpreter should fail."
     Assert-True ($result.Stderr -match "(schema|array)") "Single-string python.interpreter error should be readable."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":[],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":["mock-python"]}}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Empty skillsRoot array should fail."
     Assert-True ($result.Stderr -match "(schema|at least one)") "Empty skillsRoot error should be readable."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":[""],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":["mock-python"]}}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Empty skillsRoot item should fail."
     Assert-True ($result.Stderr -match "(schema|non-empty)") "Empty skillsRoot item error should be readable."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x","x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":["mock-python"]}}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Duplicate skillsRoot candidates should fail."
     Assert-True ($result.Stderr -match "(schema|duplicate)") "Duplicate skillsRoot error should be readable."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":[]}}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Empty python.interpreter array should fail."
     Assert-True ($result.Stderr -match "(schema|at least one)") "Empty python.interpreter error should be readable."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":[123]}}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Non-string python.interpreter item should fail."
     Assert-True ($result.Stderr -match "(schema|non-empty)") "Non-string python.interpreter error should be readable."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":["mock-python","mock-python"]}}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Duplicate python.interpreter candidates should fail."
     Assert-True ($result.Stderr -match "(schema|duplicate)") "Duplicate python.interpreter error should be readable."
 
+    Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":["mock-python"]},"logging":{"verbose":false,"log":false,"logPath":"logs/old.log"}}'
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
+    Assert-True ($result.ExitCode -ne 0) "Old logging fields should fail."
+    Assert-True ($result.Stderr -match "(schema|not supported|logging)") `
+        "Old logging field error should be readable."
+
+    Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":["mock-python"]},"logging":{"enableLog":false}}'
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
+    Assert-True ($result.ExitCode -ne 0) "logging.logDir should be required when logging is present."
+    Assert-True ($result.Stderr -match "(schema|logging.logDir)") `
+        "Missing logging.logDir error should be readable."
+
+    Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":["mock-python"]},"logging":{"logDir":"./logs"}}'
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
+    Assert-True ($result.ExitCode -ne 0) "logging.enableLog should be required when logging is present."
+    Assert-True ($result.Stderr -match "(schema|logging.enableLog)") `
+        "Missing logging.enableLog error should be readable."
+
+    Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":["mock-python"]},"logging":{"enableLog":"false","logDir":"./logs"}}'
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
+    Assert-True ($result.ExitCode -ne 0) "logging.enableLog should reject non-boolean values."
+    Assert-True ($result.Stderr -match "(schema|logging.enableLog|boolean)") `
+        "Bad logging.enableLog error should be readable."
+
+    Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":["mock-python"]},"logging":{"enableLog":true,"logDir":""}}'
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
+    Assert-True ($result.ExitCode -ne 0) "logging.logDir should reject empty values."
+    Assert-True ($result.Stderr -match "(schema|logging.logDir|empty)") `
+        "Bad logging.logDir error should be readable."
+
     Write-TestConfig -Path $configPath
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch", "-PrintCommand") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch", "--PrintCommand") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Missing python.interpreter should fail even when uv is on PATH."
     Assert-True ($result.Stderr -match "python.interpreter") "Missing interpreter error should be readable."
     Assert-True ($result.Stdout -notmatch "MOCK_UV") "PATH uv should not be used when python.interpreter is missing."
 
     Write-InterpreterTestConfig -Path $configPath -Interpreter "mock-python"
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch", "-PrintCommand") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch", "--PrintCommand") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "NoLaunch should exit 0 with a configured Python interpreter."
     Assert-True ($result.Stdout -match "Skillz MCP endpoint: http://127.0.0.1:8765/mcp") "Endpoint should be printed."
     Assert-True ($result.Stdout -match "Python environment command: skipped") `
@@ -842,7 +1025,53 @@ finally {
     Assert-True ($result.Stdout -match ([regex]::Escape($mockPython))) "Printed command should include the configured Python."
     Assert-True ($result.Stdout -match "-m uv run --directory") "Printed command should run uv as a Python module."
     Assert-True ($result.Stdout -match "--python") "Printed command should pass --python to uv run."
+    Assert-True ($result.Stdout -notmatch "--log-file") `
+        "Logging should be disabled by default when enableLog is false."
     Assert-True ($result.Stdout -notmatch "MOCK_UV") "NoLaunch should not use PATH uv."
+
+    $relativeLogDir = Join-Path $tempRoot "logs"
+    Write-LoggingTestConfig `
+        -Path $configPath `
+        -Interpreter "logging-python" `
+        -EnableLog $true `
+        -LogDir "./logs"
+    $result = Invoke-SetupAndRun `
+        -Arguments @("--ConfigPath", $configPath, "--NoLaunch", "--PrintCommand") `
+        -WorkingDirectory (Join-Path $tempRoot "outside-working-dir")
+    Assert-True ($result.ExitCode -eq 0) "NoLaunch should support logging with a relative logDir."
+    Assert-True ($result.Stdout -match "--log") "Logging should add the --log flag."
+    Assert-True ($result.Stdout -match "--log-file") "Logging should add the --log-file option."
+    Assert-True ($result.Stdout -match ([regex]::Escape($relativeLogDir))) `
+        "Relative logDir should resolve from the config file directory."
+    Assert-True ($result.Stdout -match '\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log') `
+        "Log file name should use YYYY-MM-DD-HH-MM-SS.log format."
+
+    if (Test-Path -LiteralPath $relativeLogDir) {
+        Remove-Item -LiteralPath $relativeLogDir -Recurse -Force
+    }
+    $result = Invoke-SetupAndRun `
+        -Arguments @("--ConfigPath", $configPath) `
+        -WorkingDirectory (Join-Path $tempRoot "outside-working-dir")
+    Assert-True ($result.ExitCode -eq 0) "Launch should create a timestamped log file when logging is enabled."
+    $relativeLogFiles = @(Get-ChildItem -LiteralPath $relativeLogDir -Filter "*.log")
+    Assert-True ($relativeLogFiles.Count -eq 1) "Logging should create exactly one log file for the run."
+    Assert-True ($relativeLogFiles[0].Name -match '^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.log$') `
+        "Created log file should use the required timestamp format."
+    Assert-True ((Get-Content -Raw -Encoding UTF8 -LiteralPath $relativeLogFiles[0].FullName) -match "MOCK DETAIL LOG") `
+        "Mock server should write detailed log content to the resolved log file."
+
+    $absoluteLogDir = Join-Path $tempRoot "absolute-logs"
+    Write-LoggingTestConfig `
+        -Path $configPath `
+        -Interpreter "logging-python" `
+        -EnableLog $true `
+        -LogDir $absoluteLogDir
+    $result = Invoke-SetupAndRun `
+        -Arguments @("--ConfigPath", $configPath, "--NoLaunch") `
+        -WorkingDirectory (Join-Path $tempRoot "outside-working-dir")
+    Assert-True ($result.ExitCode -eq 0) "NoLaunch should support an absolute logDir."
+    Assert-True ($result.Stdout -match ([regex]::Escape($absoluteLogDir))) `
+        "Absolute logDir should be used directly."
 
     $listener = New-LoopbackTcpListener
     try {
@@ -852,40 +1081,27 @@ finally {
             -Port $listener.Port
 
         $result = Invoke-SetupAndRun `
-            -Arguments @("-ConfigPath", $configPath, "-SkipSync") `
+            -Arguments @("--ConfigPath", $configPath) `
             -WorkingDirectory $tempRoot
         Assert-True ($result.ExitCode -ne 0) "Launch should fail when the configured port is already in use."
         Assert-True ($result.Stderr -match "already in use") "Port-in-use error should be readable."
-        Assert-True ($result.Stderr -match "StopExisting") "Port-in-use error should mention StopExisting."
+        Assert-True ($result.Stderr -match "not recognized") "Port-in-use error should explain that the listener is not the same Skillz service."
         Assert-True ($result.Stdout -notmatch "MOCK_SILENT_PYTHON_EXECUTED") `
             "Launch should fail before executing the mock server command."
 
         $result = Invoke-SetupAndRun `
-            -Arguments @("-ConfigPath", $configPath) `
+            -Arguments @("--ConfigPath", $configPath) `
             -WorkingDirectory $tempRoot
         Assert-True ($result.ExitCode -ne 0) "Launch should check the configured port before environment setup."
         Assert-True ($result.Stdout -notmatch "Python environment command:") `
             "Port-in-use failure should happen before uv sync output."
 
         $result = Invoke-SetupAndRun `
-            -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") `
+            -Arguments @("--ConfigPath", $configPath, "--NoLaunch") `
             -WorkingDirectory $tempRoot
         Assert-True ($result.ExitCode -eq 0) "NoLaunch should not require the configured port to be free."
         Assert-True ($result.Stdout -match "Skillz MCP command:") "NoLaunch should still print the command when port is occupied."
 
-        $result = Invoke-SetupAndRun `
-            -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-StopExisting") `
-            -WorkingDirectory $tempRoot
-        Assert-True ($result.ExitCode -ne 0) "StopExisting should refuse to stop a non-Skillz listener."
-        Assert-True ($result.Stderr -match "not recognized") `
-            "StopExisting should explain why the occupied port was not stopped."
-
-        $result = Invoke-SetupAndRun `
-            -Arguments @("-ConfigPath", $configPath, "-StopOnly") `
-            -WorkingDirectory $tempRoot
-        Assert-True ($result.ExitCode -ne 0) "StopOnly should refuse to stop a non-Skillz listener."
-        Assert-True ($result.Stderr -match "not recognized") `
-            "StopOnly should explain why the occupied port was not stopped."
     }
     finally {
         $listener.Listener.Stop()
@@ -914,10 +1130,10 @@ finally {
             -Port $prefixPort
 
         $result = Invoke-SetupAndRun `
-            -Arguments @("-ConfigPath", $configPath, "-StopOnly") `
+            -Arguments @("--ConfigPath", $configPath) `
             -WorkingDirectory $tempRoot
         Assert-True ($result.ExitCode -ne 0) `
-            "StopOnly should refuse a Skillz-like listener with a prefix-colliding skillsRoot."
+            "Launch should refuse a Skillz-like listener with a prefix-colliding skillsRoot."
         Assert-True ($result.Stderr -match "not recognized") `
             "Prefix-colliding listener error should be readable."
         Assert-True ($result.Stderr -notmatch "SHOULD_NOT_APPEAR") `
@@ -944,19 +1160,19 @@ finally {
             )
         Write-InterpreterTestConfig `
             -Path $configPath `
-            -Interpreter "missing-python" `
+            -Interpreter "silent-python" `
             -Port $matchingPort
 
         $result = Invoke-SetupAndRun `
-            -Arguments @("-ConfigPath", $configPath, "-StopOnly") `
+            -Arguments @("--ConfigPath", $configPath) `
             -WorkingDirectory $tempRoot
-        Assert-True ($result.ExitCode -eq 0) "StopOnly should stop a matching Skillz listener."
+        Assert-True ($result.ExitCode -eq 0) "Launch should stop a matching stale Skillz listener and continue."
         Assert-True ($result.Stdout -match "Stopping existing Skillz process") `
-            "StopOnly should report the matching process it stops."
-        Assert-True ($result.Stdout -match "StopOnly complete") `
-            "StopOnly should print a completion message after stopping a matching listener."
+            "Launch should report the matching process it stops."
+        Assert-True ($result.Stdout -match "MOCK_SILENT_PYTHON_EXECUTED") `
+            "Launch should continue after stopping a matching listener."
         $matchingProcess.WaitForExit(5000) | Out-Null
-        Assert-True ($matchingProcess.HasExited) "Matching listener process should exit after StopOnly."
+        Assert-True ($matchingProcess.HasExited) "Matching listener process should exit after automatic cleanup."
         $remainingMatching = @(
             Get-NetTCPConnection `
                 -LocalPort $matchingPort `
@@ -969,38 +1185,6 @@ finally {
         Stop-TestProcess $matchingProcess
     }
 
-    $freeProbe = New-LoopbackTcpListener
-    $freePort = $freeProbe.Port
-    $freeProbe.Listener.Stop()
-    Write-InterpreterTestConfig `
-        -Path $configPath `
-        -Interpreter "missing-python" `
-        -Port $freePort
-    $result = Invoke-SetupAndRun `
-        -Arguments @("-ConfigPath", $configPath, "-StopOnly") `
-        -WorkingDirectory $tempRoot
-    Assert-True ($result.ExitCode -eq 0) "StopOnly should not require python.interpreter to be usable."
-    Assert-True ($result.Stdout -match "StopOnly complete") "StopOnly should print a completion message."
-    Assert-True ($result.Stderr -notmatch "path not found") "StopOnly should not resolve Python candidates."
-
-    Set-Content `
-        -LiteralPath $configPath `
-        -Encoding UTF8 `
-        -Value (@{
-            skillsRoot = @($script:SkillsRoot)
-            transport = "http"
-            host = "127.0.0.1"
-            port = $freePort
-            path = "/mcp"
-        } | ConvertTo-Json -Depth 20)
-    $result = Invoke-SetupAndRun `
-        -Arguments @("-ConfigPath", $configPath, "-StopOnly") `
-        -WorkingDirectory $tempRoot
-    Assert-True ($result.ExitCode -eq 0) "StopOnly should work when only stop-related config fields are present."
-    Assert-True ($result.Stdout -match "StopOnly complete") `
-        "StopOnly with partial config should print a completion message."
-    Assert-True ($result.Stderr -notmatch "python") "StopOnly with partial config should not require python config."
-
     $jobFailureProbe = New-LoopbackTcpListener
     $jobFailurePort = $jobFailureProbe.Port
     $jobFailureProbe.Listener.Stop()
@@ -1011,7 +1195,7 @@ finally {
     try {
         $env:SKILLZ_SETUP_TEST_FORCE_JOB_FAILURE = "1"
         $result = Invoke-SetupAndRun `
-            -Arguments @("-ConfigPath", $configPath, "-SkipSync") `
+            -Arguments @("--ConfigPath", $configPath) `
             -WorkingDirectory $tempRoot
         Assert-True ($result.ExitCode -ne 0) "Job Object failure should fail before launching the server."
         Assert-True ($result.Stderr -match "Forced Job Object") `
@@ -1031,7 +1215,7 @@ finally {
         -Interpreter "exit-python" `
         -Port $exitPort
     $result = Invoke-SetupAndRun `
-        -Arguments @("-ConfigPath", $configPath, "-SkipSync") `
+        -Arguments @("--ConfigPath", $configPath) `
         -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 37) "SetupAndRun should return the tracked child process exit code."
     Assert-True ($result.Stdout -match "EXIT_PYTHON_RUN") `
@@ -1047,7 +1231,7 @@ finally {
     $setupProcess = $null
     try {
         $setupProcess = Start-SetupAndRunProcess `
-            -Arguments @("-ConfigPath", $configPath, "-SkipSync") `
+            -Arguments @("--ConfigPath", $configPath) `
             -WorkingDirectory $tempRoot
         $listeningConnections = @(Wait-ListeningPort -Port $parentKillPort -TimeoutSeconds 20)
         Assert-True ($listeningConnections.Count -gt 0) `
@@ -1073,7 +1257,7 @@ finally {
         -Path $configPath `
         -SkillsRoots @("missing-skills", $script:SkillsRoot) `
         -Interpreters @("mock-python")
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch", "-PrintCommand") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch", "--PrintCommand") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "skillsRoot should use the second candidate when the first is missing."
     Assert-True ($result.Stdout -match ([regex]::Escape($script:SkillsRoot))) "Printed command should include the selected skillsRoot."
     Assert-True ($result.Stdout -notmatch "missing-skills") "Printed command should not use the missing skillsRoot candidate."
@@ -1082,7 +1266,7 @@ finally {
         -Path $configPath `
         -SkillsRoots @($script:SkillsRoot, $otherSkillsRoot) `
         -Interpreters @("mock-python")
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch", "-PrintCommand") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch", "--PrintCommand") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "skillsRoot should stop at the first usable candidate."
     Assert-True ($result.Stdout -match ([regex]::Escape($script:SkillsRoot))) "Printed command should include the first usable skillsRoot."
     Assert-True ($result.Stdout -notmatch ([regex]::Escape($otherSkillsRoot))) "Printed command should not include the second usable skillsRoot."
@@ -1091,7 +1275,7 @@ finally {
         -Path $configPath `
         -SkillsRoots @("missing-skills-a", "missing-skills-b") `
         -Interpreters @("mock-python")
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "All-missing skillsRoot candidates should fail."
     Assert-True ($result.Stderr -match "No usable skillsRoot candidate") "All-missing skillsRoot error should be readable."
 
@@ -1099,7 +1283,7 @@ finally {
         -Path $configPath `
         -SkillsRoots @($script:SkillsRoot) `
         -Interpreters @("missing-python", "mock-python")
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch", "-PrintCommand") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch", "--PrintCommand") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "python.interpreter should use the second candidate when the first is missing."
     Assert-True ($result.Stdout -match ([regex]::Escape($mockPython))) "Printed command should include the selected Python interpreter."
 
@@ -1107,18 +1291,18 @@ finally {
         -Path $configPath `
         -SkillsRoots @($script:SkillsRoot) `
         -Interpreters @("bad-python", "mock-python")
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "python.interpreter should continue after a candidate without uv."
 
     Write-CandidateTestConfig `
         -Path $configPath `
         -SkillsRoots @($script:SkillsRoot) `
         -Interpreters @("mock-python", "missing-python")
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "python.interpreter should stop at the first usable candidate."
 
-    Write-InterpreterTestConfig -Path $configPath -Interpreter "silent-python"
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath) -WorkingDirectory $tempRoot
+    Write-InterpreterTestConfig -Path $configPath -Interpreter "silent-python" -UvSync $true
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath) -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "Default run should exit 0 with mock Python."
     Assert-True ($result.Stdout -match "Python environment command:") `
         "Default run should print the Python environment command label."
@@ -1133,7 +1317,7 @@ finally {
     Assert-True ($result.Stdout -notmatch "MOCK_SILENT_PYTHON_EXECUTED -m uv") `
         "Command details should come from SetupAndRun.ps1, not mock Python argv echo."
 
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-ConfigureOnly") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--ConfigureOnly") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "ConfigureOnly should exit 0."
     Assert-True ($result.Stdout -match "Python environment command:") `
         "ConfigureOnly should print the Python environment command label."
@@ -1146,60 +1330,82 @@ finally {
         "ConfigureOnly should not print the Skillz launch command."
     Assert-True ($result.Stdout -notmatch "MOCK_UV") "ConfigureOnly should not use PATH uv."
 
-    Write-InterpreterTestConfig -Path $configPath -Interpreter $mockPython
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-ConfigureOnly") -WorkingDirectory $tempRoot
+    Write-InterpreterTestConfig -Path $configPath -Interpreter $mockPython -UvSync $true
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--ConfigureOnly") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "ConfigureOnly should support a full Python executable path."
     Assert-True ($result.Stdout -match "MOCK_PYTHON -m uv sync") "Full Python path should call uv through Python."
 
-    Write-InterpreterTestConfig -Path $configPath -Interpreter "mock-python/python.cmd"
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-ConfigureOnly") -WorkingDirectory $tempRoot
+    Write-InterpreterTestConfig -Path $configPath -Interpreter $mockPythonDir -UvSync $true
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--ConfigureOnly") -WorkingDirectory $tempRoot
+    Assert-True ($result.ExitCode -eq 0) "ConfigureOnly should support a full Python directory path."
+    Assert-True ($result.Stdout -match "MOCK_PYTHON -m uv sync") "Full Python directory should resolve python.cmd."
+
+    Write-InterpreterTestConfig -Path $configPath -Interpreter "mock-python/python.cmd" -UvSync $true
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--ConfigureOnly") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "ConfigureOnly should support a relative Python executable path."
     Assert-True ($result.Stdout -match "MOCK_PYTHON -m uv sync") "Relative Python executable path should call uv through Python."
 
+    Write-InterpreterTestConfig -Path $configPath -Interpreter "mock-python" -UvSync $true
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--ConfigureOnly") -WorkingDirectory $tempRoot
+    Assert-True ($result.ExitCode -eq 0) "ConfigureOnly should support a relative Python directory path."
+    Assert-True ($result.Stdout -match "MOCK_PYTHON -m uv sync") "Relative Python directory should resolve python.cmd."
+
+    $nestedConfigDir = Join-Path $tempRoot "nested-config"
+    New-Item -ItemType Directory -Path $nestedConfigDir | Out-Null
+    $nestedConfigPath = Join-Path $nestedConfigDir "SetupAndRun.test.json"
+    Write-InterpreterTestConfig -Path $nestedConfigPath -Interpreter "../mock-python/python.cmd" -UvSync $true
+    $result = Invoke-SetupAndRun `
+        -Arguments @("--ConfigPath", $nestedConfigPath, "--ConfigureOnly") `
+        -WorkingDirectory $outsideWorkingDir
+    Assert-True ($result.ExitCode -eq 0) `
+        "Relative Python interpreter should resolve from the config file directory, not the working directory."
+    Assert-True ($result.Stdout -match "MOCK_PYTHON -m uv sync") `
+        "Config-directory-relative Python path should call uv through Python."
+
     Write-InterpreterTestConfig -Path $configPath -Interpreter "mock python"
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -eq 0) "NoLaunch should support a Python interpreter directory containing spaces."
     Assert-True ($result.Stdout -match "Skillz MCP command:") "NoLaunch should print the Skillz MCP command label."
     Assert-True ($result.Stdout -match ("'" + [regex]::Escape($spacePython) + "'")) `
         "Printed command should quote a Python path containing spaces."
 
     Write-InterpreterTestConfig -Path $configPath -Interpreter "missing-python"
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Missing Python interpreter path should fail."
     Assert-True ($result.Stderr -match "path not found") "Missing interpreter error should be readable."
 
     Write-InterpreterTestConfig -Path $configPath -Interpreter "empty-python"
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Python interpreter directory without Python should fail."
     Assert-True ($result.Stderr -match "does not contain") "Missing Python executable error should be readable."
 
     Write-InterpreterTestConfig -Path $configPath -Interpreter "bad-python"
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Python without uv should fail."
     Assert-True ($result.Stderr -match "Install uv first") "Missing uv error should include an install hint."
     Assert-True ($result.Stdout -notmatch "MOCK_UV") "PATH uv should not be used when python.interpreter has no uv."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","skillsRoot":"'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Invalid JSON should fail."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","python":{"interpreter":["mock-python"]},"unknown":true}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Unknown fields should fail."
     Assert-True ($result.Stderr -match "not supported") "Unknown field error should be readable."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","corsOrigins":["*"],"corsAllowCredentials":true,"python":{"interpreter":["mock-python"]}}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Wildcard credentials should fail."
     Assert-True ($result.Stderr -match "corsAllowCredentials") "CORS credential error should be readable."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","corsOrigins":["*"],"corsAllowPrivateNetwork":true,"python":{"interpreter":["mock-python"]}}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Wildcard private network access should fail."
     Assert-True ($result.Stderr -match "corsAllowPrivateNetwork") "Private network error should be readable."
 
     Set-Content -LiteralPath $configPath -Encoding UTF8 -Value '{"skillsRoot":["x"],"transport":"http","host":"127.0.0.1","port":8765,"path":"/mcp","corsOrigins":[],"corsAllowPrivateNetwork":true,"python":{"interpreter":["mock-python"]}}'
-    $result = Invoke-SetupAndRun -Arguments @("-ConfigPath", $configPath, "-SkipSync", "-NoLaunch") -WorkingDirectory $tempRoot
+    $result = Invoke-SetupAndRun -Arguments @("--ConfigPath", $configPath, "--NoLaunch") -WorkingDirectory $tempRoot
     Assert-True ($result.ExitCode -ne 0) "Private network access without origins should fail."
     Assert-True ($result.Stderr -match "corsOrigins") "Missing origin error should be readable."
 

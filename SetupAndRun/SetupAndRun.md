@@ -2,9 +2,10 @@
 
 脚本 `SetupAndRun.ps1` 用来在当前 Skillz 仓库位置配置 Python 虚拟环境，并启动 Skillz MCP Server 服务。仓库复制到其它目录后仍可直接使用，因为脚本会按自身位置解析仓库根目录。
 
-## 常用命令
+## 使用场景
 
-**场景一：配置和启动服务**
+### 场景：配置和启动服务
+
 ```powershell
 # 进入到指定目录
 cd PathToDir\skillz
@@ -13,41 +14,44 @@ powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1
 ```
 
 默认运行会先打印实际执行的环境同步命令和 Skillz MCP Server 启动命令，格式如下：
-
 ```text
 Python environment command: <python> -m uv sync ...
 Skillz MCP command: <python> -m uv run ... skillz ...
 ```
 
-**场景二：配置并打印启动命令**
+### 场景：配置并输出启动命令
+
+如需在测试或排障时只打印命令并跳过 `uv sync` 命令，不要传命令行参数，改为在临时配置文件中把 `python.uvSync` 设为 `false` 值，再通过 `--ConfigPath` 指向该配置即可，下列是配置环境并且输出启动命令：
 ```powershell
 # 进入到指定目录
 cd PathToDir\skillz
-# 只检查配置并打印解析后的命令，不启动服务
-powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1 -SkipSync -NoLaunch -PrintCommand
+# 按配置执行环境同步，打印解析后的命令，但不启动服务
+powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1 --NoLaunch --PrintCommand
 ```
 
-**场景三：只停止旧服务**
+### 场景：自动清理同一旧服务后启动
+
 ```powershell
 # 进入到指定目录
 cd PathToDir\skillz
-# 仅停止配置端口上的同一个 Skillz 服务，不重新启动
-powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1 -StopOnly
+# 默认启动前会检查并关闭同一 skillsRoot 和同一端口的旧 Skillz 服务
+powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1
 ```
 
-**场景四：清理旧服务后启动**
+### 场景：端口被其它程序占用时处理
+
 ```powershell
 # 进入到指定目录
 cd PathToDir\skillz
-# 仅当确认旧的同端口监听者就是同一个 Skillz 服务时使用
-powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1 -SkipSync -StopExisting
+# 查看端口监听进程，再关闭占用程序或调整配置中的 port
+Get-NetTCPConnection -LocalPort 8000 -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess
+powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1 --NoLaunch --PrintCommand
 ```
 
-脚本在真正启动 HTTP/SSE 服务前会检查配置端口是否已被监听。默认行为是拒绝启动并打印脱敏后的监听进程信息，不会自动杀进程。传入 `-StopExisting` 时，脚本只会停止命令行中能识别为同一 `skillsRoot` 和同一端口的 Skillz 监听进程，然后继续启动。传入 `-StopOnly` 时只执行同样的安全停止逻辑，然后退出，不重新启动。`-StopOnly` 只要求配置中存在停止服务需要的 `transport`、`port` 和 `skillsRoot` 字段，不要求 Python 环境配置可用。如果端口被其它程序占用，或路径只是前缀相似但不是同一个 `skillsRoot`，会拒绝停止，避免误杀。
+脚本在真正启动 HTTP/SSE 服务前会检查配置端口是否已被监听。如果监听者能识别为同一 `skillsRoot` 和同一端口的 Skillz 服务，脚本会先关闭旧服务再继续启动。如果端口被其它程序占用，或路径只是前缀相似但不是同一个 `skillsRoot` 目录，脚本会拒绝启动并打印脱敏后的监听进程信息，避免误杀。在 HTTP/SSE 服务启动后，脚本会把本次启动的 `uv`、Python 和 Skillz 子进程放入 Windows Job Object 中，并在脚本退出时执行清理。正常退出、按 `Ctrl+C`、关闭当前终端或由 Codex 中止父脚本时，都会尽量关闭本次启动的进程树并释放端口。若需要刷新服务进程或重新做 Chrome 页面测试，先关闭当前运行脚本的终端或停止对应进程，再重新执行启动命令。
 
-HTTP/SSE 服务启动后，脚本会把本次启动的 `uv`、Python 和 Skillz 子进程放入 Windows Job Object 中，并在脚本退出时执行清理。正常退出、按 `Ctrl+C`、关闭当前终端或由 Codex 中止父脚本时，都会尽量关闭本次启动的进程树并释放端口。若需要刷新 Skills 或重新做 Chrome 页面测试，先执行 `-StopOnly`，确认旧服务关闭后再重新启动。
+### 场景：运行测试用例
 
-**场景五：运行测试用例**
 ```powershell
 # 进入到指定目录
 cd PathToDir\skillz
@@ -57,7 +61,7 @@ powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRunTests.ps1
 
 ## Python 和 uv 配置
 
-`skillsRoot` 和 `python.interpreter` 只支持数组写法，用来在不同机器之间保存候选路径。脚本会按数组顺序选择第一个可用候选，字段 `skillsRoot` 不会合并多个目录，只会把最终选中的一个目录传给 Skillz MCP Server 服务，下列是具体示例：
+配置文件中的 `skillsRoot` 和 `python.interpreter` 只支持数组写法，用来在不同机器之间保存候选路径。脚本会按数组顺序选择第一个可用候选，字段 `skillsRoot` 不会合并多个目录，只会把最终选中的一个目录传给 Skillz MCP Server 服务，下列是具体示例：
 
 ```json
 "skillsRoot": [
@@ -74,10 +78,7 @@ powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRunTests.ps1
 }
 ```
 
-脚本只会从 `SetupAndRun.json` 配置文件的 `python.interpreter` 候选列表解析 Python 解释器，并通过最终选中的解释器执行 `python -m uv` 命令，脚本不会从 `PATH` 查找 `uv` 包，也不会在未配置解释器时回退到全局 `uv` 包。`python.interpreter` 候选可以写完整解释器路径，也可以写包含 Python 启动器的目录；如果候选写目录，那么 Windows 下脚本会依次查找 `python.exe`、`python.cmd`、`python.bat` 文件。相对路径按配置文件所在目录解析。
-
-脚本不会自动安装 `uv` 包，如果配置的解释器环境提示缺少 `uv`，可以手动执行下列命令：
-
+脚本只会从 `SetupAndRun.json` 配置文件的 `python.interpreter` 候选列表解析 Python 解释器，并通过最终选中的解释器执行 `python -m uv` 命令，脚本不会从 `PATH` 查找 `uv` 包，也不会在未配置解释器时回退到全局 `uv` 包。字段 `python.interpreter` 候选可以写完整解释器路径，也可以写包含 Python 启动器的目录。如果候选写目录，那么 Windows 下脚本会依次查找 `python.exe`/`python.cmd`/`python.bat` 文件。相对路径按配置文件所在目录解析。脚本不会自动安装 `uv` 包，如果配置的解释器环境提示缺少 `uv` 工具，可以手动执行下列命令：
 ```powershell
 # 使用指定解释器安装环境管理工具
 E:\QGISPackages\QGIS34407-Release\apps\Python312\python.exe -m pip install uv
@@ -88,14 +89,14 @@ E:\QGISPackages\QGIS34407-Release\apps\Python312\python.exe -m pip install uv
 # 进入到指定目录
 cd PathToDir\skillz
 # 运行脚本确认解析结果，不启动服务
-powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1 -NoLaunch -PrintCommand
+powershell -ExecutionPolicy Bypass -File .\SetupAndRun\SetupAndRun.ps1 --NoLaunch --PrintCommand
 ```
 
 ## llama-ui 配置
 
 默认配置会启动配置文件中指定的地址，在 llama-ui 的 MCP Servers 页面添加这个 URL 值，在浏览器直连的情况下，配置 `corsOrigins` 必须包含地址栏里的 llama-ui origin 地址信息，例如 `http://127.0.0.1:8282` 或 `https://example.tailnet.ts.net` 地址。
 
-当 llama-ui 是 HTTPS 页面，并且浏览器要访问本机或局域网里的 HTTP Skillz 服务时，浏览器可能触发本地网络访问预检，此时在配置中把 `corsAllowPrivateNetwork` 设为 `true`，并确保 `corsOrigins` 只写明确可信的 llama-ui origin，不要和通配符 `*` 搭配使用。较新的 Chrome 版本还可能要求对 llama-ui 站点单独授予 Local Network Access / Apps on device 权限。如果 llama-ui 中显示 `Failed to fetch` 信息，但本机 curl/PowerShell 或 MCP 客户端能正常访问 Skillz 服务，先在 Chrome 地址栏左侧的站点设置中允许该站点访问本机/本地网络，再刷新 MCP Server 卡片。这个浏览器权限和 Skillz 的 CORS/PNA 响应头不是同一层检查。
+当 llama-ui 是 HTTPS 页面，并且浏览器要访问本机或局域网里的 HTTP Skillz 服务时，浏览器可能触发本地网络访问预检，此时在配置中把 `corsAllowPrivateNetwork` 设为 `true`，并确保 `corsOrigins` 只写明确可信的 llama-ui origin 来源，不要和通配符 `*` 搭配使用。较新的 Chrome 版本还可能要求对 llama-ui 站点单独授予 Local Network Access / Apps on device 权限。如果 llama-ui 中显示 `Failed to fetch` 信息，但本机 curl/PowerShell 或 MCP 客户端能正常访问 Skillz 服务，先在 Chrome 地址栏左侧的站点设置中允许该站点访问本机/本地网络，再刷新 MCP Server 卡片。这个浏览器权限和 Skillz 的 CORS/PNA 响应头不是同一层检查。
 
 ## 两台电脑
 

@@ -22,8 +22,7 @@
     "frozen": true
   },
   "logging": {
-    "verbose": false,
-    "log": false,
-    "logPath": ".skillz/skillz.log"
+    "enableLog": true,
+    "logDir": "./logs"
   }
 }

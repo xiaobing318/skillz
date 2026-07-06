@@ -141,7 +141,7 @@ def test_build_cors_middleware_returns_empty_without_origins() -> None:
     assert build_cors_middleware(()) == []
 
 
-def test_build_cors_middleware_rejects_private_network_without_origin() -> None:
+def test_build_cors_rejects_private_network_without_origin() -> None:
     with pytest.raises(
         SkillError,
         match="requires at least one --cors-origin",

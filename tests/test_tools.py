@@ -45,7 +45,7 @@ async def test_server_exposes_read_only_skill_tools(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_skills_returns_startup_metadata_only(
+async def test_list_skills_returns_current_metadata_only(
     tmp_path: Path,
 ) -> None:
     write_skill(tmp_path, name="echo")
@@ -56,7 +56,7 @@ async def test_list_skills_returns_startup_metadata_only(
     server = build_server(registry)
     tools = await server.get_tools()
 
-    assert "startup metadata only" in tools["list_skills"].description
+    assert "current metadata only" in tools["list_skills"].description
 
     result = await tools["list_skills"].fn()
 
