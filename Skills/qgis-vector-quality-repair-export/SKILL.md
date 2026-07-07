@@ -5,6 +5,7 @@ compatibility: Skillz HTTP MCP Server, llama-ui, exec_shell_command, QGIS 3.44.7
 allowed-tools:
   - exec_shell_command
   - read_file
+  - write_file
 metadata:
   domain: qgis
   data-kind: vector
@@ -25,6 +26,15 @@ metadata:
 - target_crs：目标坐标系，默认 EPSG:4326。
 - required_fields：人工指定的必需字段，可为空。
 
+## 普通提示词处理规则
+
+- 如果用户只给出测试数据目录，直接按该目录下的 `input`、`output`、`logs` 和 `output\scratch` 处理，不要求用户补充完整参数。
+- 在 `C:\Data\QGISData\TestData\qgis-vector-quality-repair-export` 测试目录中，默认使用 `input\raw_roads.shp` 作为待质检和修复的主数据。
+- 用户没有给出目标 CRS 时默认使用 `EPSG:4326`。没有给出必需字段时只检查空几何、几何有效性、重复记录和 CRS，不因字段清单缺失中断。
+- `legacy_names_gbk.*` 和 `legacy_names_latin1.*` 是编码样本，只参与字符集探测和转换记录，不作为质检修复的主输入。
+- 先创建 `output`、`logs`、`output\scratch` 三个目录，再做任何检查、转换或输出。不得修改 `input` 原始数据。
+- 用户要求“检查”“修复”或“导出”时，本轮默认重新生成标准成果，不要只读取已有的 `summary.json` 或旧成果后宣称完成。若 `output` 中已有同名标准成果，只能覆盖本技能约定的 `repaired_export.gpkg`、`summary.json` 和 `encoding-normalization.json`，并在日志中写明覆盖对象。也可以改用带本轮时间后缀的输出文件。
+
 ## 输出
 
 - 修复后的 GeoPackage 或 Shapefile 成果。
@@ -36,7 +46,7 @@ metadata:
 
 1. 建立任务目录
    - 工具：`exec_shell_command`。
-   - 做法：创建 output、logs、scratch 子目录，并写入 run-start.log。
+   - 做法：创建 output、logs、output\scratch 子目录，并写入 run-start.log。
    - 日志：`logs/step-01-prepare.log`。
    - 成功判定：目录存在且日志末尾出现 STEP_OK。
 
@@ -48,7 +58,7 @@ metadata:
 
 3. 探测并统一字符集
    - 工具：`exec_shell_command`。
-   - 做法：读取 .cpg、ogrinfo 输出和 CSV 文本头信息，识别 GBK/CP936、ISO-8859-1、Windows-1252 或 UTF-8。发现非 UTF-8 时，使用 ogr2ogr -oo ENCODING=<源编码> -lco ENCODING=UTF-8 写入 scratch 中的 UTF-8 副本；输出 Shapefile 必须写 .cpg=UTF-8，GPKG 和 GeoJSON 记录为 UTF-8 安全容器。
+   - 做法：读取 .cpg、ogrinfo 输出和 CSV 文本头信息，识别 GBK/CP936、ISO-8859-1、Windows-1252 或 UTF-8。发现非 UTF-8 时，使用 ogr2ogr -oo ENCODING=<源编码> -lco ENCODING=UTF-8 写入 scratch 中的 UTF-8 副本。输出 Shapefile 必须写 .cpg=UTF-8，GPKG 和 GeoJSON 记录为 UTF-8 安全容器。
    - 日志：`logs/step-03-encoding.log`。
    - 成功判定：日志包含 source_encoding、target_encoding=UTF-8 和 STEP_OK，summary.json 或 manifest.json 记录转换结果。
 
@@ -60,19 +70,19 @@ metadata:
 
 5. 检查字段和空几何
    - 工具：`exec_shell_command`。
-   - 做法：用 qgis_process 或 Python/OGR 检查必需字段、空几何、重复记录。
+   - 做法：用 qgis_process-qgis-qt6.bat 或 Python/OGR 检查必需字段、空几何、重复记录。
    - 日志：`logs/step-05-quality.log`。
    - 成功判定：无阻塞问题，或问题已写入 summary.json。
 
 6. 修复几何
    - 工具：`exec_shell_command`。
-   - 做法：优先调用 qgis_process native:fixgeometries，必要时使用 ogr2ogr -makevalid。
+   - 做法：优先调用 qgis_process-qgis-qt6.bat run native:fixgeometries，必要时使用 ogr2ogr -makevalid。
    - 日志：`logs/step-06-repair.log`。
    - 成功判定：输出图层存在，日志无 ERROR。
 
 7. 统一坐标系
    - 工具：`exec_shell_command`。
-   - 做法：使用 ogr2ogr -t_srs 或 qgis_process native:reprojectlayer。
+   - 做法：使用 ogr2ogr -t_srs 或 qgis_process-qgis-qt6.bat run native:reprojectlayer。
    - 日志：`logs/step-07-reproject.log`。
    - 成功判定：输出 CRS 等于 target_crs。
 
@@ -99,13 +109,28 @@ metadata:
 ## 命令执行约定
 
 - 默认发布包根目录是 `C:\Data\QGISPackages\QGIS34407-Release`。
-- 每条命令都用 `exec_shell_command` 执行，命令内部先进入发布包 `bin` 目录，再调用环境脚本。
-- 命令模板：
+- 每条命令都用 `exec_shell_command` 执行。优先直接调用完整工具路径，避免把整条 Windows 命令再包进额外的外层引号。
+- 本技能只使用 `exec_shell_command`、`read_file` 和 `write_file`。不要调用 `edit_file`。日志、SQL、JSON、参数文件或脚本写错时，用 `write_file` 重写完整文件，或用 `exec_shell_command` 重新生成。
+- 向工具的 JSON 参数写 Windows 路径时，不要直接写单反斜杠路径。使用双反斜杠 `C:\\Data\\...\\input\\messy.gpkg`，或使用正斜杠 `C:/Data/.../input/messy.gpkg`，避免 `\r`、`\t` 被当成 JSON 控制字符导致路径变形。
+- 对 `mkdir`、`dir`、`copy`、`move`、`del` 这类 cmd 内置命令，先 `cd /d C:\Data\QGISData\TestData\qgis-vector-quality-repair-export` 到测试根目录，再用相对路径执行。例如 `cd /d C:\Data\QGISData\TestData\qgis-vector-quality-repair-export && mkdir output 2>nul && mkdir logs 2>nul && mkdir output\scratch 2>nul`。不要反复尝试 `mkdir "C:\Data\...\output"` 形式。
+- Python 脚本可以把中文写入 UTF-8 文件，但控制台输出尽量只写 ASCII 状态、数字和路径。确实需要输出中文时，在命令前设置 `PYTHONIOENCODING=utf-8`，避免 Windows 控制台编码触发 `UnicodeEncodeError`。
+- 已核验的工具入口：
+  - `C:\Data\QGISPackages\QGIS34407-Release\bin\qgis_process-qgis-qt6.bat`
+  - `C:\Data\QGISPackages\QGIS34407-Release\bin\ogrinfo.exe`
+  - `C:\Data\QGISPackages\QGIS34407-Release\bin\ogr2ogr.exe`
+  - `C:\Data\QGISPackages\QGIS34407-Release\bin\gdalinfo.exe`
+- `qgis_process-qgis-qt6.bat` 会自行调用 QGIS 环境。不要改用未核验的 qgis_process 入口，也不要手工拼接旧式环境初始化命令链。
+- 已核验算法包括 `native:fixgeometries` 和 `native:reprojectlayer`。直接使用 `run <algorithm> -- PARAM=VALUE`，不要用 `help`、`show` 或 `info` 试探算法。
+- 最小探测命令：
 
 ```cmd
-cd /d C:\Data\QGISPackages\QGIS34407-Release\bin && call qgis-qt6-env.bat && <具体工具命令> 1> "<日志文件>" 2>&1
+"C:\Data\QGISPackages\QGIS34407-Release\bin\ogrinfo.exe" --version
+"C:\Data\QGISPackages\QGIS34407-Release\bin\qgis_process-qgis-qt6.bat" plugins list
 ```
 
+- 任务命令中的单个路径参数可以加双引号，但不要把整条命令作为带引号的一个参数提交。测试目录路径当前不含空格时，可直接使用完整路径，减少转义错误。
+- Shapefile 输入必须成组检查 `.shp/.shx/.dbf/.prj/.cpg`，缺少 sidecar 时停止并说明。
+- 写质检报告、字段清单、JSON 或摘要时，优先使用 `write_file` 写到 `logs` 或 `output`。如果改用 `exec_shell_command` 重定向生成文件，先确认父目录存在。
 - 不把长日志直接贴到对话里。先写入 `logs\step-xx-*.log`，再读取日志末尾和关键错误行判断结果。
 - 如果日志包含 `ERROR`、`Traceback`、`FAIL`、`Cannot open` 或工具返回非 0 退出码，停止后续步骤，解释失败原因并给出修复建议。
 - 成功后才能进入下一步。最后必须写 `summary.json`，记录输入、输出、命令、日志和结论。

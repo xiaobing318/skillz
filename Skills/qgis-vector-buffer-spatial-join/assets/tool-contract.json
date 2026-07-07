@@ -7,9 +7,12 @@
     "input",
     "output",
     "logs",
-    "chrome-prompts"
+    "chrome-prompts",
+    "user-prompt"
   ],
   "logging_rule": "每一步都写独立日志，下一步前读取日志判断。",
+  "scratch_rule": "运行前先创建 output\\scratch，编码转换和中间文件只写入 scratch 或 output，不覆盖 input。",
+  "output_reuse_rule": "用户要求生成或分析时默认重新生成标准成果，不把已有 summary.json 当作本轮完成证据；覆盖时只限本技能约定输出并写入日志。",
   "encoding_policy": {
     "applies_to": "vector_attributes",
     "source_encodings": [

@@ -5,6 +5,7 @@ compatibility: Skillz HTTP MCP Server, llama-ui, exec_shell_command, QGIS 3.44.7
 allowed-tools:
   - exec_shell_command
   - read_file
+  - write_file
 metadata:
   domain: qgis
   data-kind: raster
@@ -25,6 +26,14 @@ metadata:
 - output_dir：输出目录。
 - resampling：重采样方式。
 
+## 普通提示词处理规则
+
+- 如果用户只给出测试数据目录，直接按该目录下的 `input`、`output`、`logs` 和 `output\scratch` 处理，不要求用户补充完整参数。
+- 在 `C:\Data\QGISData\TestData\qgis-raster-mosaic-clip-overview` 测试目录中，默认使用 `input\tile_west.tif` 和 `input\tile_east.tif` 作为待镶嵌栅格，使用 `input\clip_mask.shp` 作为裁剪掩膜。
+- 用户没有给出重采样方式时默认使用 `near`。必须在 `logs\step-01-prepare.log` 和 `summary.json` 中写明默认值、瓦片数量和掩膜图层。
+- 先创建 `output`、`logs`、`output\scratch` 三个目录，再做任何检查、转换或输出。不得修改 `input` 原始数据。
+- 用户要求“镶嵌”“裁剪”或“建立概览”时，本轮默认重新生成标准成果，不要只读取已有的 `summary.json` 或旧成果后宣称完成。若 `output` 中已有同名标准成果，只能覆盖本技能约定的 `mosaic.vrt`、`mosaic.tif`、裁剪成果和 `summary.json`，并在日志中写明覆盖对象。也可以改用带本轮时间后缀的输出文件。
+
 ## 输出
 
 - mosaic.vrt 和镶嵌 GeoTIFF。
@@ -35,9 +44,9 @@ metadata:
 
 1. 准备目录
    - 工具：`exec_shell_command`。
-   - 做法：创建 output、logs。
+   - 做法：创建 output、logs、output\scratch。
    - 日志：`logs/step-01-prepare.log`。
-   - 成功判定：目录存在。
+   - 成功判定：目录存在，日志包含 raster_count、mask_layer 和 scratch_dir。
 
 2. 检查瓦片
    - 工具：`exec_shell_command`。
@@ -83,13 +92,30 @@ metadata:
 ## 命令执行约定
 
 - 默认发布包根目录是 `C:\Data\QGISPackages\QGIS34407-Release`。
-- 每条命令都用 `exec_shell_command` 执行，命令内部先进入发布包 `bin` 目录，再调用环境脚本。
-- 命令模板：
+- 每条命令都用 `exec_shell_command` 执行。优先直接调用完整工具路径，避免把整条 Windows 命令再包进额外的外层引号。
+- 本技能只使用 `exec_shell_command`、`read_file` 和 `write_file`。不要调用 `edit_file`。日志、SQL、JSON、参数文件或脚本写错时，用 `write_file` 重写完整文件，或用 `exec_shell_command` 重新生成。
+- 向工具的 JSON 参数写 Windows 路径时，不要直接写单反斜杠路径。使用双反斜杠 `C:\\Data\\...\\input\\tile_a.tif`，或使用正斜杠 `C:/Data/.../input/tile_a.tif`，避免 `\r`、`\t` 被当成 JSON 控制字符导致路径变形。
+- 对 `mkdir`、`dir`、`copy`、`move`、`del` 这类 cmd 内置命令，先 `cd /d C:\Data\QGISData\TestData\qgis-raster-mosaic-clip-overview` 到测试根目录，再用相对路径执行。例如 `cd /d C:\Data\QGISData\TestData\qgis-raster-mosaic-clip-overview && mkdir output 2>nul && mkdir logs 2>nul && mkdir output\scratch 2>nul`。不要反复尝试 `mkdir "C:\Data\...\output"` 形式。
+- Python 脚本可以把中文写入 UTF-8 文件，但控制台输出尽量只写 ASCII 状态、数字和路径。确实需要输出中文时，在命令前设置 `PYTHONIOENCODING=utf-8`，避免 Windows 控制台编码触发 `UnicodeEncodeError`。
+- 已核验的工具入口：
+  - `C:\Data\QGISPackages\QGIS34407-Release\bin\gdalinfo.exe`
+  - `C:\Data\QGISPackages\QGIS34407-Release\bin\gdalbuildvrt.exe`
+  - `C:\Data\QGISPackages\QGIS34407-Release\bin\gdal_translate.exe`
+  - `C:\Data\QGISPackages\QGIS34407-Release\bin\gdalwarp.exe`
+  - `C:\Data\QGISPackages\QGIS34407-Release\bin\gdaladdo.exe`
+  - `C:\Data\QGISPackages\QGIS34407-Release\bin\ogrinfo.exe`
+  - `C:\Data\QGISPackages\QGIS34407-Release\bin\qgis_process-qgis-qt6.bat`
+- `qgis_process-qgis-qt6.bat` 会自行调用 QGIS 环境。不要改用未核验的 qgis_process 入口，也不要手工拼接旧式环境初始化命令链。
+- 最小探测命令：
 
 ```cmd
-cd /d C:\Data\QGISPackages\QGIS34407-Release\bin && call qgis-qt6-env.bat && <具体工具命令> 1> "<日志文件>" 2>&1
+"C:\Data\QGISPackages\QGIS34407-Release\bin\gdalinfo.exe" --version
+"C:\Data\QGISPackages\QGIS34407-Release\bin\qgis_process-qgis-qt6.bat" plugins list
 ```
 
+- 任务命令中的单个路径参数可以加双引号，但不要把整条命令作为带引号的一个参数提交。测试目录路径当前不含空格时，可直接使用完整路径，减少转义错误。
+- Shapefile 掩膜必须成组检查 `.shp/.shx/.dbf/.prj/.cpg`，缺少 sidecar 时停止并说明。
+- 需要写 VRT 清单、参数文件、JSON 或摘要时，优先使用 `write_file` 写到 `logs` 或 `output`。如果改用 `exec_shell_command` 重定向生成文件，先确认父目录存在。
 - 不把长日志直接贴到对话里。先写入 `logs\step-xx-*.log`，再读取日志末尾和关键错误行判断结果。
 - 如果日志包含 `ERROR`、`Traceback`、`FAIL`、`Cannot open` 或工具返回非 0 退出码，停止后续步骤，解释失败原因并给出修复建议。
 - 成功后才能进入下一步。最后必须写 `summary.json`，记录输入、输出、命令、日志和结论。
